@@ -725,18 +725,28 @@ public class SingleThreadEventExecutor extends AbstractScheduledEventExecutor im
 
     private static final long SCHEDULE_PURGE_INTERVAL = TimeUnit.SECONDS.toNanos(1);
 
+    protected final boolean tryStart() {
+        if (state != ST_NOT_STARTED) {
+            return false;
+        }
+        return STATE_UPDATER.compareAndSet(this, ST_NOT_STARTED, ST_STARTED);
+    }
+
+    protected final boolean tryRollbackStart() {
+        return STATE_UPDATER.compareAndSet(this, ST_STARTED, ST_NOT_STARTED);
+    }
+
     private void startThread() {
-        if (state == ST_NOT_STARTED) {
-            if (STATE_UPDATER.compareAndSet(this, ST_NOT_STARTED, ST_STARTED)) {
-                boolean success = false;
-                try {
-                    doStartThread();
-                    success = true;
-                } finally {
-                    if (!success) {
-                        STATE_UPDATER.compareAndSet(this, ST_STARTED, ST_NOT_STARTED);
-                    }
-                }
+        if (!tryStart()) {
+            return;
+        }
+        boolean success = false;
+        try {
+            doStartThread();
+            success = true;
+        } finally {
+            if (!success) {
+                tryRollbackStart();
             }
         }
     }
@@ -759,82 +769,89 @@ public class SingleThreadEventExecutor extends AbstractScheduledEventExecutor im
         return false;
     }
 
+    protected final void doStart() {
+        thread = Thread.currentThread();
+        if (interrupted) {
+            thread.interrupt();
+        }
+        updateLastExecutionTime();
+    }
+
+    protected final void doShutdown(boolean success) {
+        for (;;) {
+            int oldState = state;
+            if (oldState >= ST_SHUTTING_DOWN || STATE_UPDATER.compareAndSet(
+                    this, oldState, ST_SHUTTING_DOWN)) {
+                break;
+            }
+        }
+
+        // Check if confirmShutdown() was called at the end of the loop.
+        if (success && gracefulShutdownStartTime == 0) {
+            if (logger.isErrorEnabled()) {
+                logger.error("Buggy " + EventExecutor.class.getSimpleName() + " implementation; " +
+                        SingleThreadEventExecutor.class.getSimpleName() + ".confirmShutdown() must " +
+                        "be called before run() implementation terminates.");
+            }
+        }
+
+        try {
+            // Run all remaining tasks and shutdown hooks. At this point the event loop
+            // is in ST_SHUTTING_DOWN state still accepting tasks which is needed for
+            // graceful shutdown with quietPeriod.
+            for (;;) {
+                if (confirmShutdown()) {
+                    break;
+                }
+            }
+
+            // Now we want to make sure no more tasks can be added from this point. This is
+            // achieved by switching the state. Any new tasks beyond this point will be rejected.
+            for (;;) {
+                int oldState = state;
+                if (oldState >= ST_SHUTDOWN || STATE_UPDATER.compareAndSet(
+                        this, oldState, ST_SHUTDOWN)) {
+                    break;
+                }
+            }
+
+            // We have the final set of tasks in the queue now, no more can be added, run all remaining.
+            // No need to loop here, this is the final pass.
+            confirmShutdown();
+        } finally {
+            try {
+                cleanup();
+            } finally {
+                // Lets remove all FastThreadLocals for the Thread as we are about to terminate and notify
+                // the future. The user may block on the future and once it unblocks the JVM may terminate
+                // and start unloading classes.
+                // See https://github.com/netty/netty/issues/6596.
+                FastThreadLocal.removeAll();
+
+                STATE_UPDATER.set(this, ST_TERMINATED);
+                threadLock.countDown();
+                int numUserTasks = drainTasks();
+                if (numUserTasks > 0 && logger.isWarnEnabled()) {
+                    logger.warn("An event executor terminated with " +
+                            "non-empty task queue (" + numUserTasks + ')');
+                }
+                terminationFuture.setSuccess(null);
+            }
+        }
+    }
+
     private void doStartThread() {
         assert thread == null;
         executor.execute(() -> {
-            thread = Thread.currentThread();
-            if (interrupted) {
-                thread.interrupt();
-            }
-
+            doStart();
             boolean success = false;
-            updateLastExecutionTime();
             try {
                 run();
                 success = true;
             } catch (Throwable t) {
                 logger.warn("Unexpected exception from an event executor: ", t);
             } finally {
-                for (;;) {
-                    int oldState = state;
-                    if (oldState >= ST_SHUTTING_DOWN || STATE_UPDATER.compareAndSet(
-                            this, oldState, ST_SHUTTING_DOWN)) {
-                        break;
-                    }
-                }
-
-                // Check if confirmShutdown() was called at the end of the loop.
-                if (success && gracefulShutdownStartTime == 0) {
-                    if (logger.isErrorEnabled()) {
-                        logger.error("Buggy " + EventExecutor.class.getSimpleName() + " implementation; " +
-                                SingleThreadEventExecutor.class.getSimpleName() + ".confirmShutdown() must " +
-                                "be called before run() implementation terminates.");
-                    }
-                }
-
-                try {
-                    // Run all remaining tasks and shutdown hooks. At this point the event loop
-                    // is in ST_SHUTTING_DOWN state still accepting tasks which is needed for
-                    // graceful shutdown with quietPeriod.
-                    for (;;) {
-                        if (confirmShutdown()) {
-                            break;
-                        }
-                    }
-
-                    // Now we want to make sure no more tasks can be added from this point. This is
-                    // achieved by switching the state. Any new tasks beyond this point will be rejected.
-                    for (;;) {
-                        int oldState = state;
-                        if (oldState >= ST_SHUTDOWN || STATE_UPDATER.compareAndSet(
-                                this, oldState, ST_SHUTDOWN)) {
-                            break;
-                        }
-                    }
-
-                    // We have the final set of tasks in the queue now, no more can be added, run all remaining.
-                    // No need to loop here, this is the final pass.
-                    confirmShutdown();
-                } finally {
-                    try {
-                        cleanup();
-                    } finally {
-                        // Lets remove all FastThreadLocals for the Thread as we are about to terminate and notify
-                        // the future. The user may block on the future and once it unblocks the JVM may terminate
-                        // and start unloading classes.
-                        // See https://github.com/netty/netty/issues/6596.
-                        FastThreadLocal.removeAll();
-
-                        STATE_UPDATER.set(this, ST_TERMINATED);
-                        threadLock.countDown();
-                        int numUserTasks = drainTasks();
-                        if (numUserTasks > 0 && logger.isWarnEnabled()) {
-                            logger.warn("An event executor terminated with " +
-                                    "non-empty task queue (" + numUserTasks + ')');
-                        }
-                        terminationFuture.setSuccess(null);
-                    }
-                }
+                doShutdown(success);
             }
         });
     }
