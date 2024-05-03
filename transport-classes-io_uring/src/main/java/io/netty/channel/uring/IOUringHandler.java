@@ -1,0 +1,350 @@
+/*
+ * Copyright 2022 The Netty Project
+ *
+ * The Netty Project licenses this file to you under the Apache License,
+ * version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at:
+ *
+ *   https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+package io.netty.channel.uring;
+
+import io.netty.channel.IoEventLoop;
+import io.netty.channel.IoHandlerFactory;
+import io.netty.channel.IoExecutionContext;
+import io.netty.channel.IoHandle;
+import io.netty.channel.IoHandler;
+import io.netty.channel.IoOpt;
+import io.netty.channel.IoRegistration;
+import io.netty.channel.unix.FileDescriptor;
+import io.netty.util.collection.IntObjectHashMap;
+import io.netty.util.collection.IntObjectMap;
+import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.StringUtil;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
+
+
+import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * {@link IoHandler} which is implemented in terms of the Linux-specific {@code io_uring} API.
+ */
+final class IOUringHandler implements IoHandler, CompletionCallback {
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(IOUringHandler.class);
+    private static final short RING_CLOSE = 1;
+
+    private final RingBuffer ringBuffer;
+    private final IntObjectMap<AbstractIOUringChannel> channels;
+    private final ArrayDeque<AbstractIOUringChannel> touchedChannels;
+
+    private final AtomicBoolean eventfdAsyncNotify = new AtomicBoolean();
+    private final FileDescriptor eventfd;
+    private final long eventfdReadBuf;
+    private long eventfdReadSubmitted;
+
+    private boolean eventFdClosing;
+    private volatile boolean shuttingDown;
+    private boolean closeCompleted;
+
+    IOUringHandler(RingBuffer ringBuffer) {
+        // Ensure that we load all native bits as otherwise it may fail when try to use native methods in IovArray
+        IOUring.ensureAvailability();
+        this.ringBuffer = requireNonNull(ringBuffer, "ringBuffer");
+        channels = new IntObjectHashMap<>();
+        touchedChannels = new ArrayDeque<>();
+        eventfd = Native.newBlockingEventFd();
+        eventfdReadBuf = PlatformDependent.allocateMemory(8);
+    }
+
+    @Override
+    public int run(IoExecutionContext context) {
+        SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+        CompletionQueue completionQueue = ringBuffer.ioUringCompletionQueue();
+        if (!completionQueue.hasCompletions() && context.canBlock()) {
+            if (eventfdReadSubmitted == 0) {
+                submitEventFdRead();
+            }
+            if (context.deadlineNanos() != -1) {
+                submitTimeout(context);
+            }
+            submissionQueue.submitAndWait();
+        } else {
+            submissionQueue.submit();
+        }
+        int completed = completionQueue.process(this);
+        notifyIoFinished();
+        return completed;
+    }
+
+    private void notifyIoFinished() {
+        AbstractIOUringChannel ch;
+        while ((ch = touchedChannels.poll()) != null) {
+            ch.ioLoopCompleted();
+        }
+    }
+
+    @Override
+    public void handle(int fd, int res, int flags, long udata) {
+        if (fd == eventfd.intValue()) {
+            handleEventFdRead();
+            return;
+        }
+        byte op = UserData.decodeOp(udata);
+        if (fd == ringBuffer.fd()) {
+            if (op == Native.IORING_OP_NOP && UserData.decodeData(udata) == RING_CLOSE) {
+                completeRingClose();
+            }
+            return;
+        }
+        if (op == Native.IORING_OP_ASYNC_CANCEL) {
+            // We don't care about the result of async cancels; they are best-effort.
+            return;
+        }
+        AbstractIOUringChannel ch = channels.get(fd);
+        if (ch == null) {
+            logger.debug("ignoring {} completion for unknown channel (fd={}, res={})",
+                    Native.opToStr(op), fd, res);
+            return;
+        }
+        touchedChannels.offer(ch);
+        switch (op) {
+            case Native.IORING_OP_READ:
+            case Native.IORING_OP_RECV:
+            case Native.IORING_OP_ACCEPT:
+            case Native.IORING_OP_RECVMSG:
+                ch.readComplete(res, udata);
+                break;
+            case Native.IORING_OP_WRITE:
+            case Native.IORING_OP_SEND:
+            case Native.IORING_OP_WRITEV:
+            case Native.IORING_OP_SENDMSG:
+                ch.writeComplete(res, udata);
+                break;
+            case Native.IORING_OP_CONNECT:
+                ch.connectComplete(res, udata);
+                break;
+            case Native.IORING_OP_POLL_ADD:
+                if (UserData.decodeData(udata) == Native.POLLRDHUP) {
+                    ch.completeRdHup(res);
+                }
+                break;
+            case Native.IORING_OP_POLL_REMOVE:
+                // Ignore poll_removes.
+                break;
+            case Native.IORING_OP_CLOSE:
+                ch.closeComplete(res, udata);
+                break;
+            default:
+                logger.warn("Unknown {} completion: fd={}, res={}, udata={}.", Native.opToStr(op), fd, res, udata);
+        }
+    }
+
+    private void handleEventFdRead() {
+        eventfdReadSubmitted = 0;
+        if (!eventFdClosing) {
+            eventfdAsyncNotify.set(false);
+            submitEventFdRead();
+        }
+    }
+
+    private void submitEventFdRead() {
+        SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+        eventfdReadSubmitted = submissionQueue.addEventFdRead(eventfd.intValue(), eventfdReadBuf, 0, 8, (short) 0);
+    }
+
+    private void submitTimeout(IoExecutionContext context) {
+        long delayNanos = context.delayNanos(System.nanoTime());
+        ringBuffer.ioUringSubmissionQueue().addTimeout(ringBuffer.fd(), delayNanos, (short) 0);
+    }
+
+    @Override
+    public void prepareToDestroy() {
+        shuttingDown = true;
+        CompletionQueue completionQueue = ringBuffer.ioUringCompletionQueue();
+        SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+        AbstractIOUringChannel[] chs = channels.values().toArray(AbstractIOUringChannel[]::new);
+
+        // Ensure all previously submitted IOs get to complete before closing all fds.
+        submissionQueue.addNop(ringBuffer.fd(), Native.IOSQE_IO_DRAIN, (short) 0);
+
+        for (AbstractIOUringChannel ch : chs) {
+            ch.close();
+            if (submissionQueue.count() > 0) {
+                submissionQueue.submit();
+            }
+            if (completionQueue.hasCompletions()) {
+                completionQueue.process(this);
+            }
+        }
+    }
+
+    @Override
+    public void destroy() {
+        SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+        CompletionQueue completionQueue = ringBuffer.ioUringCompletionQueue();
+        drainEventFd();
+        if (submissionQueue.remaining() < 2) {
+            // We need to submit 2 linked operations. Since they are linked, we cannot allow a submit-call to
+            // separate them. We don't have enough room (< 2) in the queue, so we submit now to make more room.
+            submissionQueue.submit();
+        }
+        // Try to drain all the IO from the queue first...
+        submissionQueue.link(true);
+        submissionQueue.addNop(ringBuffer.fd(), Native.IOSQE_IO_DRAIN, (short) 0);
+        submissionQueue.link(false);
+        // ... but only wait for 200 milliseconds on this
+        submissionQueue.addLinkTimeout(ringBuffer.fd(), TimeUnit.MILLISECONDS.toNanos(200), (short) 0);
+        submissionQueue.submitAndWait();
+        completionQueue.process(this);
+        completeRingClose();
+    }
+
+    // We need to prevent the race condition where a wakeup event is submitted to a file descriptor that has
+    // already been freed (and potentially reallocated by the OS). Because submitted events is gated on the
+    // `eventfdAsyncNotify` flag we can close the gate but may need to read any outstanding events that have
+    // (or will) be written.
+    private void drainEventFd() {
+        CompletionQueue completionQueue = ringBuffer.ioUringCompletionQueue();
+        SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+        assert !eventFdClosing;
+        eventFdClosing = true;
+        boolean eventPending = eventfdAsyncNotify.getAndSet(true);
+        if (eventPending) {
+            // There is an event that has been or will be written by another thread, so we must wait for the event.
+            // Make sure we're actually listening for writes to the event fd.
+            while (eventfdReadSubmitted == 0) {
+                submitEventFdRead();
+                submissionQueue.submit();
+            }
+            // Drain the eventfd of the pending wakup.
+            class DrainFdEventCallback implements CompletionCallback {
+                boolean eventFdDrained;
+
+                @Override
+                public void handle(int fd, int res, int flags, long udata) {
+                    if (fd == eventfd.intValue()) {
+                        eventFdDrained = true;
+                    }
+                    IOUringHandler.this.handle(fd, res, flags, udata);
+                }
+            }
+            final DrainFdEventCallback handler = new DrainFdEventCallback();
+            completionQueue.process(handler);
+            while (!handler.eventFdDrained) {
+                submissionQueue.submitAndWait();
+                completionQueue.process(handler);
+            }
+        }
+        // We've consumed any pending eventfd read and `eventfdAsyncNotify` should never
+        // transition back to false, thus we should never have any more events written.
+        // So, if we have a read event pending, we can cancel it.
+        if (eventfdReadSubmitted != 0) {
+            submissionQueue.addCancel(eventfd.intValue(), eventfdReadSubmitted);
+            eventfdReadSubmitted = 0;
+            submissionQueue.submit();
+        }
+    }
+
+    private void completeRingClose() {
+        if (closeCompleted) {
+            // already done.
+            return;
+        }
+        closeCompleted = true;
+        ringBuffer.close();
+        try {
+            eventfd.close();
+        } catch (IOException e) {
+            logger.warn("Failed to close eventfd", e);
+        }
+        PlatformDependent.freeMemory(eventfdReadBuf);
+    }
+
+    @Override
+    public IoRegistration register(IoEventLoop eventLoop, IoHandle handle, IoOpt opt) throws Exception {
+        AbstractIOUringChannel ch = cast(handle);
+        if (shuttingDown) {
+            throw new RejectedExecutionException("IoEventLoop is shutting down");
+        }
+        int fd = ch.fd().intValue();
+        ch.completeChannelRegister(ringBuffer.ioUringSubmissionQueue());
+        if (channels.put(fd, ch) == null) {
+            ringBuffer.ioUringSubmissionQueue().incrementHandledFds();
+        }
+    }
+
+    private void deregister(IoHandle handle) {
+        AbstractIOUringChannel<?> ch = cast(handle);
+        int fd = ch.fd().intValue();
+        AbstractIOUringChannel<?> existing = channels.remove(fd);
+        if (existing != null) {
+            ringBuffer.ioUringSubmissionQueue().decrementHandledFds();
+            if (existing != ch) {
+                // The Channel mapping was already replaced due FD reuse, put back the stored Channel.
+                channels.put(fd, existing);
+                // If we found another Channel in the map that is mapped to the same FD the given Channel MUST be
+                // closed.
+                assert !ch.isOpen();
+            }
+        }
+    }
+
+    private static AbstractIOUringChannel<?> cast(IoHandle handle) {
+        if (handle instanceof AbstractIOUringChannel) {
+            return (AbstractIOUringChannel<?>) handle;
+        }
+        String typeName = StringUtil.simpleClassName(handle);
+        throw new IllegalArgumentException("Channel of type " + typeName + " not supported");
+    }
+
+    @Override
+    public void wakeup(IoEventLoop eventLoop) {
+        if (!eventLoop.inEventLoop() && !eventfdAsyncNotify.getAndSet(true)) {
+            // write to the eventfd which will then trigger an eventfd read completion.
+            Native.eventFdWrite(eventfd.intValue(), 1L);
+        }
+    }
+
+    @Override
+    public boolean isCompatible(Class<? extends IoHandle> handleType) {
+        return AbstractIOUringChannel.class.isAssignableFrom(handleType);
+    }
+
+
+    public static IoHandlerFactory newFactory() {
+        IOUring.ensureAvailability();
+        return () -> {
+            RingBuffer ringBuffer = Native.createRingBuffer();
+            return new IOUringHandler(ringBuffer);
+        };
+    }
+
+    public static IoHandlerFactory newFactory(int ringSize) {
+        IOUring.ensureAvailability();
+        return () -> {
+            RingBuffer ringBuffer = Native.createRingBuffer(ringSize);
+            return new IOUringHandler(ringBuffer);
+        };
+    }
+
+    public static IoHandlerFactory newFactory(int ringSize, int kernelWorkerOffloadThreshold) {
+        IOUring.ensureAvailability();
+        return () -> {
+            RingBuffer ringBuffer = Native.createRingBuffer(ringSize, kernelWorkerOffloadThreshold);
+            return new IOUringHandler(ringBuffer);
+        };
+    }
+}
