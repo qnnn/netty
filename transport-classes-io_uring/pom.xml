@@ -23,7 +23,7 @@
   </parent>
   <artifactId>netty-transport-classes-io_uring</artifactId>
 
-  <name>Netty/Transport/Classes/io_uring</name>
+  <name>Netty5/Transport/Classes/io_uring</name>
   <packaging>jar</packaging>
 
   <properties>

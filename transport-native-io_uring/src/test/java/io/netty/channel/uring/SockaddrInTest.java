@@ -15,6 +15,7 @@
  */
 package io.netty.channel.uring;
 
+import io.netty.channel.unix.Buffer;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -24,9 +25,8 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 
-import static io.netty5.channel.unix.Buffer.allocateDirectWithNativeOrder;
-import static io.netty5.channel.unix.Buffer.free;
-import static io.netty5.channel.unix.Buffer.nativeAddressOf;
+import static io.netty.channel.unix.Buffer.allocateDirectWithNativeOrder;
+import static io.netty.channel.unix.Buffer.free;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -42,7 +42,7 @@ public class SockaddrInTest {
     public void testIp4() throws Exception {
         ByteBuffer buffer = allocateDirectWithNativeOrder(64);
         try {
-            long memoryAddress = nativeAddressOf(buffer);
+            long memoryAddress = Buffer.memoryAddress(buffer);
             InetAddress address = InetAddress.getByAddress(new byte[] { 10, 10, 10, 10 });
             int port = 45678;
             assertEquals(Native.SIZEOF_SOCKADDR_IN, SockaddrIn.writeIPv4(memoryAddress, address, port));
@@ -59,7 +59,7 @@ public class SockaddrInTest {
     public void testIp6() throws Exception {
         ByteBuffer buffer = allocateDirectWithNativeOrder(64);
         try {
-            long memoryAddress = nativeAddressOf(buffer);
+            long memoryAddress = Buffer.memoryAddress(buffer);
             Inet6Address address = Inet6Address.getByAddress(
                     null, new byte[] { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }, 12345);
             int port = 45678;
@@ -81,7 +81,7 @@ public class SockaddrInTest {
     public void testWriteIp4ReadIpv6Mapped() throws Exception {
         ByteBuffer buffer = allocateDirectWithNativeOrder(64);
         try {
-            long memoryAddress = nativeAddressOf(buffer);
+            long memoryAddress = Buffer.memoryAddress(buffer);
             InetAddress address = InetAddress.getByAddress(new byte[] { 10, 10, 10, 10 });
             int port = 45678;
             assertEquals(Native.SIZEOF_SOCKADDR_IN6, SockaddrIn.writeIPv6(memoryAddress, address, port));

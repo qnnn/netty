@@ -15,23 +15,22 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.bootstrap.Bootstrap;
-import io.netty5.bootstrap.ServerBootstrap;
-import io.netty5.channel.AdaptiveReadHandleFactory;
-import io.netty5.channel.Channel;
-import io.netty5.channel.ChannelFactory;
-import io.netty5.channel.EventLoop;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.MultithreadEventLoopGroup;
-import io.netty5.channel.socket.SocketChannelWriteHandleFactory;
-import io.netty5.channel.socket.nio.NioDatagramChannel;
-import io.netty5.channel.socket.nio.NioServerSocketChannel;
-import io.netty5.channel.socket.nio.NioSocketChannel;
-import io.netty5.testsuite.transport.TestsuitePermutation;
-import io.netty5.testsuite.transport.TestsuitePermutation.BootstrapComboFactory;
-import io.netty5.testsuite.transport.TestsuitePermutation.BootstrapFactory;
-import io.netty5.testsuite.transport.socket.SocketTestPermutation;
-import io.netty5.util.concurrent.DefaultThreadFactory;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFactory;
+import io.netty.channel.EventLoop;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.MultithreadEventLoopGroup;
+import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.testsuite.transport.TestsuitePermutation;
+import io.netty.testsuite.transport.TestsuitePermutation.BootstrapComboFactory;
+import io.netty.testsuite.transport.TestsuitePermutation.BootstrapFactory;
+import io.netty.testsuite.transport.socket.SocketTestPermutation;
+import io.netty.util.concurrent.DefaultThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,15 +42,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import static io.netty5.channel.unix.Limits.SSIZE_MAX;
+import static io.netty.channel.unix.Limits.SSIZE_MAX;
 
 public class IOUringSocketTestPermutation extends SocketTestPermutation {
 
     static final IOUringSocketTestPermutation INSTANCE = new IOUringSocketTestPermutation();
 
-    static final EventLoopGroup IO_URING_BOSS_GROUP = new MultithreadEventLoopGroup(
+    static final EventLoopGroup IO_URING_BOSS_GROUP = new MultiThreadIoEventLoopGroup(
             BOSSES, new DefaultThreadFactory("testsuite-io_uring-boss", true), IOUring.newFactory());
-    static final EventLoopGroup IO_URING_WORKER_GROUP = new MultithreadEventLoopGroup(
+    static final EventLoopGroup IO_URING_WORKER_GROUP = new MultiThreadIoEventLoopGroup(
             WORKERS, new DefaultThreadFactory("testsuite-io_uring-worker", true), IOUring.newFactory());
 
     private static final Logger logger = LoggerFactory.getLogger(IOUringSocketTestPermutation.class);

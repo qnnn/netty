@@ -15,10 +15,10 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.bootstrap.Bootstrap;
-import io.netty5.bootstrap.ServerBootstrap;
-import io.netty5.testsuite.transport.TestsuitePermutation;
-import io.netty5.testsuite.transport.socket.CompositeBufferGatheringWriteTest;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.testsuite.transport.TestsuitePermutation;
+import io.netty.testsuite.transport.socket.CompositeBufferGatheringWriteTest;
 import org.junit.jupiter.api.BeforeAll;
 
 import java.util.List;

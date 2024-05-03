@@ -15,11 +15,11 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.channel.Channel;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.MultithreadEventLoopGroup;
-import io.netty5.channel.ServerChannel;
-import io.netty5.channel.unix.tests.DetectPeerCloseWithoutReadTest;
+import io.netty.channel.Channel;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.ServerChannel;
+import io.netty.channel.unix.tests.DetectPeerCloseWithoutReadTest;
 import org.junit.jupiter.api.BeforeAll;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -33,7 +33,7 @@ public class IOUringDetectPeerCloseWithReadTest extends DetectPeerCloseWithoutRe
 
     @Override
     protected EventLoopGroup newGroup() {
-        return new MultithreadEventLoopGroup(2, IOUring.newFactory());
+        return new MultiThreadIoEventLoopGroup(2, IOUring.newFactory());
     }
 
     @Override

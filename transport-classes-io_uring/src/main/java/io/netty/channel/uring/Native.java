@@ -15,6 +15,8 @@
  */
 package io.netty.channel.uring;
 
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.channel.unix.FileDescriptor;
 import io.netty.channel.unix.PeerCredentials;
 import io.netty.channel.unix.Unix;
@@ -23,8 +25,6 @@ import io.netty.util.internal.NativeLibraryLoader;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.ThrowableUtil;
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.File;
 import java.io.IOException;

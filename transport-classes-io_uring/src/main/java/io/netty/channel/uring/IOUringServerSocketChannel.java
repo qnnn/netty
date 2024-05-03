@@ -15,24 +15,21 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.buffer.Buffer;
-import io.netty5.channel.AdaptiveReadHandleFactory;
-import io.netty5.channel.Channel;
-import io.netty5.channel.ChannelOption;
-import io.netty5.channel.ChannelShutdownDirection;
-import io.netty5.channel.EventLoop;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.ServerChannelReadHandleFactory;
-import io.netty5.channel.ServerChannelWriteHandleFactory;
-import io.netty5.channel.socket.DomainSocketAddress;
-import io.netty5.channel.socket.ServerSocketChannel;
-import io.netty5.channel.socket.SocketChannelWriteHandleFactory;
-import io.netty5.channel.socket.SocketProtocolFamily;
-import io.netty5.channel.unix.Errors;
-import io.netty5.channel.unix.UnixChannel;
-import io.netty5.util.NetUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoop;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ServerChannelReadHandleFactory;
+import io.netty.channel.ServerChannelWriteHandleFactory;
+import io.netty.channel.socket.DomainSocketAddress;
+import io.netty.channel.socket.ServerSocketChannel;
+import io.netty.channel.socket.SocketChannelWriteHandleFactory;
+import io.netty.channel.socket.SocketProtocolFamily;
+import io.netty.channel.unix.Errors;
+import io.netty.channel.unix.UnixChannel;
+import io.netty.util.NetUtil;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
 import java.net.SocketAddress;
@@ -40,17 +37,17 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static io.netty5.channel.unix.Buffer.allocateDirectWithNativeOrder;
-import static io.netty5.channel.unix.Buffer.free;
-import static io.netty5.channel.unix.Buffer.nativeAddressOf;
-import static io.netty5.channel.unix.Errors.ERRNO_EAGAIN_NEGATIVE;
-import static io.netty5.channel.unix.Errors.ERRNO_EWOULDBLOCK_NEGATIVE;
-import static io.netty5.channel.unix.Limits.SSIZE_MAX;
-import static io.netty5.util.internal.ObjectUtil.checkPositiveOrZero;
+import static io.netty.channel.unix.Buffer.allocateDirectWithNativeOrder;
+import static io.netty.channel.unix.Buffer.free;
+import static io.netty.channel.unix.Buffer.nativeAddressOf;
+import static io.netty.channel.unix.Errors.ERRNO_EAGAIN_NEGATIVE;
+import static io.netty.channel.unix.Errors.ERRNO_EWOULDBLOCK_NEGATIVE;
+import static io.netty.channel.unix.Limits.SSIZE_MAX;
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 
 public final class IOUringServerSocketChannel extends AbstractIOUringChannel<UnixChannel>
         implements ServerSocketChannel {
-    private static final Logger LOGGER = LoggerFactory.getLogger(IOUringDatagramChannel.class);
+    private static final InternalLogger LOGGER = InternalLoggerFactory.getLogger(IOUringDatagramChannel.class);
     private static final short IS_ACCEPT = 1;
     private final ByteBuffer sockaddrMemory;
     private final long sockaddrPtr;

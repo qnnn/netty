@@ -15,20 +15,20 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.bootstrap.Bootstrap;
-import io.netty5.buffer.Buffer;
-import io.netty5.channel.Channel;
-import io.netty5.channel.ChannelHandlerAdapter;
-import io.netty5.channel.ChannelHandlerContext;
-import io.netty5.channel.ChannelOption;
-import io.netty5.channel.FixedReadHandleFactory;
-import io.netty5.channel.SimpleChannelInboundHandler;
-import io.netty5.channel.socket.DatagramPacket;
-import io.netty5.channel.socket.SocketProtocolFamily;
-import io.netty5.channel.unix.SegmentedDatagramPacket;
-import io.netty5.testsuite.transport.TestsuitePermutation;
-import io.netty5.testsuite.transport.socket.DatagramUnicastInetTest;
-import io.netty5.util.ReferenceCountUtil;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.FixedRecvByteBufAllocator;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.socket.DatagramPacket;
+import io.netty.channel.unix.SegmentedDatagramPacket;
+import io.netty.testsuite.transport.TestsuitePermutation;
+import io.netty.testsuite.transport.socket.DatagramUnicastInetTest;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -40,10 +40,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
-import static io.netty5.buffer.DefaultBufferAllocators.offHeapAllocator;
-import static java.util.Arrays.stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -71,17 +68,17 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
         Channel cc = null;
 
         try {
-            cb.handler(new SimpleChannelInboundHandler<>() {
+            cb.handler(new SimpleChannelInboundHandler<Object>() {
                 @Override
-                protected void messageReceived(ChannelHandlerContext ctx, Object msg) {
+                protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
                     // NOOP.
                 }
             });
-            cc = cb.bind(newSocketAddress()).asStage().get();
+            cc = cb.bind(newSocketAddress()).sync().channel();
 
             CountDownLatch readLatch = new CountDownLatch(1);
             CountDownLatch readCompleteLatch = new CountDownLatch(1);
-            sc = sb.handler(new ChannelHandlerAdapter() {
+            sc = sb.handler(new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelRead(ChannelHandlerContext ctx, Object msg) {
                     readLatch.countDown();
@@ -92,19 +89,19 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
                 public void channelReadComplete(ChannelHandlerContext ctx) {
                     readCompleteLatch.countDown();
                 }
-            }).option(ChannelOption.READ_HANDLE_FACTORY, new FixedReadHandleFactory(2048))
-                    .bind(newSocketAddress()).asStage().get();
+            }).option(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(2048))
+                    .bind(newSocketAddress()).sync().channel();
             InetSocketAddress addr = sendToAddress((InetSocketAddress) sc.localAddress());
-            cc.writeAndFlush(new DatagramPacket(offHeapAllocator().copyOf(new byte[512]), addr)).asStage().sync();
+            cc.writeAndFlush(new DatagramPacket(cc.alloc().buffer().writeZero(512),  addr)).sync();
 
             readLatch.await();
             readCompleteLatch.await();
         } finally {
             if (cc != null) {
-                cc.close().asStage().sync();
+                cc.close().sync();
             }
             if (sc != null) {
-                sc.close().asStage().sync();
+                sc.close().sync();
             }
         }
     }
@@ -155,14 +152,14 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
         Channel cc = null;
 
         try {
-            cb.handler(new SimpleChannelInboundHandler<>() {
+            cb.handler(new SimpleChannelInboundHandler<Object>() {
                 @Override
-                public void messageReceived(ChannelHandlerContext ctx, Object msgs) {
+                public void channelRead0(ChannelHandlerContext ctx, Object msgs) {
                     // Nothing will be sent.
                 }
             });
 
-            cc = cb.bind(newSocketAddress()).asStage().get();
+            cc = cb.bind(newSocketAddress()).sync().channel();
             if (!(cc instanceof IOUringDatagramChannel)) {
                 // Only supported for the native io_uring transport.
                 return;
@@ -176,11 +173,11 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
                 // Enable GRO and also ensure we can read everything with one read as otherwise
                 // we will drop things on the floor.
                 sb.option(IOUringChannelOption.UDP_GRO, true);
-                sb.option(ChannelOption.READ_HANDLE_FACTORY, new FixedReadHandleFactory(bufferCapacity));
+                sb.option(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(bufferCapacity));
             }
-            sc = sb.handler(new SimpleChannelInboundHandler<>() {
+            sc = sb.handler(new SimpleChannelInboundHandler<Object>() {
                 @Override
-                public void messageReceived(ChannelHandlerContext ctx, Object msg) {
+                public void channelRead0(ChannelHandlerContext ctx, Object msg) {
                     if (msg instanceof DatagramPacket) {
                         DatagramPacket packet = (DatagramPacket) msg;
                         int packetSize = packet.content().readableBytes();
@@ -192,7 +189,7 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
                 }
 
                 @Override
-                public void channelExceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
                     do {
                         Throwable throwable = errorRef.get();
                         if (throwable != null) {
@@ -202,33 +199,31 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
                             break;
                         }
                     } while (!errorRef.compareAndSet(null, cause));
-                    super.channelExceptionCaught(ctx, cause);
+                    super.exceptionCaught(ctx, cause);
                 }
-            }).bind(newSocketAddress()).asStage().get();
+            }).bind(newSocketAddress()).sync().channel();
 
             if (gro && !(sc instanceof IOUringDatagramChannel)) {
                 // Only supported for the native io_uring transport.
                 return;
             }
             if (sc instanceof IOUringDatagramChannel) {
-                assertEquals(gro, sc.getOption(IOUringChannelOption.UDP_GRO));
+                assertEquals(gro, sc.config().getOption(IOUringChannelOption.UDP_GRO));
             }
             InetSocketAddress addr = sendToAddress((InetSocketAddress) sc.localAddress());
-            final Buffer buffer;
+            final ByteBuf buffer;
             if (composite) {
-                Buffer[] components = new Buffer[numBuffers];
+                ByteBuf[] components = new ByteBuf[numBuffers];
                 for (int i = 0; i < numBuffers; i++) {
-                    components[i] = offHeapAllocator().allocate(segmentSize);
-                    components[i].fill((byte) 0);
-                    components[i].skipWritableBytes(segmentSize);
+                    components[i] = cc.alloc().buffer(segmentSize);
+                    components[i].writeZero(segmentSize);
                 }
-                buffer = offHeapAllocator().compose(stream(components).map(Buffer::send).collect(Collectors.toList()));
+                buffer = Unpooled.wrappedBuffer(components);
             } else {
-                buffer = offHeapAllocator().allocate(bufferCapacity);
-                buffer.fill((byte) 0);
-                buffer.skipWritableBytes(bufferCapacity);
+                buffer = cc.alloc().buffer(bufferCapacity);
+                buffer.writeZero(segmentSize);
             }
-            cc.writeAndFlush(new SegmentedDatagramPacket(buffer, segmentSize, addr)).asStage().sync();
+            cc.writeAndFlush(new SegmentedDatagramPacket(buffer, segmentSize, addr)).sync();
 
             if (!latch.await(10, TimeUnit.SECONDS)) {
                 Throwable error = errorRef.get();
@@ -239,10 +234,10 @@ public class IOUringDatagramUnicastTest extends DatagramUnicastInetTest {
             }
         } finally {
             if (cc != null) {
-                cc.close().asStage().sync();
+                cc.close().sync();
             }
             if (sc != null) {
-                sc.close().asStage().sync();
+                sc.close().sync();
             }
         }
     }

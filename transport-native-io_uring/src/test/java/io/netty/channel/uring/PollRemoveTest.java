@@ -15,15 +15,15 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.bootstrap.ServerBootstrap;
-import io.netty5.channel.Channel;
-import io.netty5.channel.ChannelInitializer;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.MultithreadEventLoopGroup;
-import io.netty5.channel.socket.ServerSocketChannel;
-import io.netty5.channel.socket.SocketChannel;
-import io.netty5.handler.logging.LogLevel;
-import io.netty5.handler.logging.LoggingHandler;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.socket.ServerSocketChannel;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,7 +39,7 @@ public class PollRemoveTest {
 
     private static void ioUringTest() throws Exception {
         Class<? extends ServerSocketChannel> clazz = IOUringServerSocketChannel.class;
-        final EventLoopGroup bossGroup = new MultithreadEventLoopGroup(1, IOUring.newFactory());
+        final EventLoopGroup bossGroup = new MultiThreadIoEventLoopGroup(1, IOUring.newFactory());
 
         try {
             ServerBootstrap b = new ServerBootstrap();
@@ -51,12 +51,12 @@ public class PollRemoveTest {
                         public void initChannel(SocketChannel ch) { }
                     });
 
-            Channel sc = b.bind(2020).asStage().get();
+            Channel sc = b.bind(2020).sync().channel();
 
             // close ServerChannel
-            sc.close().asStage().sync();
+            sc.close().sync();
         } finally {
-            bossGroup.shutdownGracefully().asStage().sync();
+            bossGroup.shutdownGracefully().sync();
         }
     }
 

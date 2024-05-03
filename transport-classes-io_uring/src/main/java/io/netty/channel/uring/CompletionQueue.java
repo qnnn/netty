@@ -15,18 +15,20 @@
  */
 package io.netty.channel.uring;
 
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
-import io.netty.util.internal.PlatformDependent;
+import io.netty5.util.internal.PlatformDependent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.StringJoiner;
 import java.util.function.IntSupplier;
+
+import static io.netty.channel.uring.UserData.decode;
 
 /**
  * Completion queue implementation for io_uring.
  */
 final class CompletionQueue implements IntSupplier {
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(CompletionQueue.class);
+    private static final Logger logger = LoggerFactory.getLogger(CompletionQueue.class);
 
     //these offsets are used to access specific properties
     //CQE (https://github.com/axboe/liburing/blob/master/src/include/liburing/io_uring.h#L162)
@@ -107,7 +109,7 @@ final class CompletionQueue implements IntSupplier {
                         ringFd, Native.opToStr(UserData.decodeOp(udata)), UserData.decodeFd(udata), res);
             }
             try {
-                UserData.decode(res, flags, udata, callback);
+                decode(res, flags, udata, callback);
             } catch (Error e) {
                 throw e;
             } catch (Throwable throwable) {

@@ -15,13 +15,12 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.channel.EventLoop;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.IoHandlerFactory;
-import io.netty5.channel.MultithreadEventLoopGroup;
-import io.netty5.channel.ServerChannel;
-import io.netty5.testsuite.transport.AbstractSingleThreadEventLoopTest;
-import io.netty5.util.concurrent.Future;
+import io.netty.channel.EventLoop;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.IoHandlerFactory;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.ServerChannel;
+import io.netty.testsuite.transport.AbstractSingleThreadEventLoopTest;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
@@ -54,13 +53,13 @@ public class IOUringEventLoopTest extends AbstractSingleThreadEventLoopTest {
 
     @Test
     public void testSubmitMultipleTasksAndEnsureTheseAreExecuted() throws Exception {
-        EventLoopGroup group =  new MultithreadEventLoopGroup(1, newIoHandlerFactory());
+        EventLoopGroup group =  new MultiThreadIoEventLoopGroup(1, newIoHandlerFactory());
         try {
             EventLoop loop = group.next();
-            loop.submit(EMPTY_RUNNABLE).asStage().sync();
-            loop.submit(EMPTY_RUNNABLE).asStage().sync();
-            loop.submit(EMPTY_RUNNABLE).asStage().sync();
-            loop.submit(EMPTY_RUNNABLE).asStage().sync();
+            loop.submit(EMPTY_RUNNABLE).sync();
+            loop.submit(EMPTY_RUNNABLE).sync();
+            loop.submit(EMPTY_RUNNABLE).sync();
+            loop.submit(EMPTY_RUNNABLE).sync();
         } finally {
             group.shutdownGracefully();
         }
@@ -68,27 +67,27 @@ public class IOUringEventLoopTest extends AbstractSingleThreadEventLoopTest {
 
     @RepeatedTest(100)
     public void shutdownNotSoGracefully() throws Exception {
-        EventLoopGroup group =  new MultithreadEventLoopGroup(1, newIoHandlerFactory());
+        EventLoopGroup group =  new MultiThreadIoEventLoopGroup(1, newIoHandlerFactory());
         CountDownLatch latch = new CountDownLatch(1);
         group.submit(() -> latch.countDown());
         latch.await(5, TimeUnit.SECONDS);
-        assertTrue(group.shutdownGracefully(0L, 0L, TimeUnit.NANOSECONDS).asStage()
+        assertTrue(group.shutdownGracefully(0L, 0L, TimeUnit.NANOSECONDS)
                 .await(1500L, TimeUnit.MILLISECONDS));
     }
 
     @Test
     public void shutsDownGracefully() throws Exception {
-        EventLoopGroup group = new MultithreadEventLoopGroup(1, newIoHandlerFactory());
+        EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, newIoHandlerFactory());
         assertTrue(group.shutdownGracefully(1L, 1L, TimeUnit.MILLISECONDS)
-                .asStage().await(1500L, TimeUnit.MILLISECONDS));
+                .await(1500L, TimeUnit.MILLISECONDS));
     }
 
     @Test
     public void testSchedule() throws Exception {
-        EventLoopGroup group = new MultithreadEventLoopGroup(1, IOUring.newFactory());
+        EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IOUring.newFactory());
         try {
             EventLoop loop = group.next();
-            loop.schedule(EMPTY_RUNNABLE, 1, TimeUnit.SECONDS).asStage().sync();
+            loop.schedule(EMPTY_RUNNABLE, 1, TimeUnit.SECONDS).sync();
         } finally {
             group.shutdownGracefully();
         }

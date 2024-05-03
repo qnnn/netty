@@ -15,14 +15,14 @@
  */
 package io.netty.channel.uring;
 
-import io.netty.channel.ChannelOption;
-import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.SystemPropertyUtil;
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
+import io.netty5.channel.IoHandlerFactory;
+import io.netty5.util.internal.PlatformDependent;
+import io.netty5.util.internal.SystemPropertyUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class IOUring {
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(IOUring.class);
+    private static final Logger logger = LoggerFactory.getLogger(IOUring.class);
     private static final Throwable UNAVAILABILITY_CAUSE;
 
     static {
@@ -82,25 +82,28 @@ public final class IOUring {
         return UNAVAILABILITY_CAUSE;
     }
 
-
-    /**
-     * Returns {@code true} if the io_uring native transport is both {@linkplain #isAvailable() available} and supports
-     * {@linkplain ChannelOption#TCP_FASTOPEN_CONNECT client-side TCP FastOpen}.
-     *
-     * @return {@code true} if it's possible to use client-side TCP FastOpen via io_uring, otherwise {@code false}.
-     */
-    public static boolean isTcpFastOpenClientSideAvailable() {
-        return isAvailable() && Native.IS_SUPPORTING_TCP_FASTOPEN_CLIENT;
+    public static IoHandlerFactory newFactory() {
+        ensureAvailability();
+        return () -> {
+            RingBuffer ringBuffer = Native.createRingBuffer();
+            return new IOUringHandler(ringBuffer);
+        };
     }
 
-    /**
-     * Returns {@code true} if the io_uring native transport is both {@linkplain #isAvailable() available} and supports
-     * {@linkplain ChannelOption#TCP_FASTOPEN server-side TCP FastOpen}.
-     *
-     * @return {@code true} if it's possible to use server-side TCP FastOpen via io_uring, otherwise {@code false}.
-     */
-    public static boolean isTcpFastOpenServerSideAvailable() {
-        return isAvailable() && Native.IS_SUPPORTING_TCP_FASTOPEN_SERVER;
+    public static IoHandlerFactory newFactory(int ringSize) {
+        ensureAvailability();
+        return () -> {
+            RingBuffer ringBuffer = Native.createRingBuffer(ringSize);
+            return new IOUringHandler(ringBuffer);
+        };
+    }
+
+    public static IoHandlerFactory newFactory(int ringSize, int kernelWorkerOffloadThreshold) {
+        ensureAvailability();
+        return () -> {
+            RingBuffer ringBuffer = Native.createRingBuffer(ringSize, kernelWorkerOffloadThreshold);
+            return new IOUringHandler(ringBuffer);
+        };
     }
 
     private IOUring() {

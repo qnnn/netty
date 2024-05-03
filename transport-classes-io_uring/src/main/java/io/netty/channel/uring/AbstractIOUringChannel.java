@@ -15,49 +15,48 @@
  */
 package io.netty.channel.uring;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.Buffer;
+import io.netty.buffer.BufferAllocator;
+import io.netty.buffer.DefaultBufferAllocators;
+import io.netty.buffer.StandardAllocationTypes;
 import io.netty.channel.AbstractChannel;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.ConnectTimeoutException;
-import io.netty.channel.unix.Buffer;
+import io.netty.channel.ChannelException;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelShutdownDirection;
+import io.netty.channel.EventLoop;
+import io.netty.channel.ReadHandleFactory;
+import io.netty.channel.WriteHandleFactory;
+import io.netty.channel.socket.SocketProtocolFamily;
 import io.netty.channel.unix.Errors;
 import io.netty.channel.unix.FileDescriptor;
 import io.netty.channel.unix.UnixChannel;
-import io.netty.channel.unix.UnixChannelUtil;
-import io.netty.util.ReferenceCountUtil;
+import io.netty.channel.unix.UnixChannelOption;
+import io.netty.util.Resource;
 import io.netty.util.collection.LongObjectHashMap;
 import io.netty.util.collection.LongObjectMap;
 import io.netty.util.concurrent.Future;
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
+import io.netty.util.concurrent.FutureContextListener;
+import io.netty.util.concurrent.Promise;
+import io.netty.util.internal.SilentDispose;
 
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.NoRouteToHostException;
 import java.net.SocketAddress;
 import java.net.SocketException;
-import java.nio.ByteBuffer;
-import java.nio.channels.AlreadyConnectedException;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.ConnectionPendingException;
 import java.nio.channels.UnresolvedAddressException;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.ObjLongConsumer;
 
 import static io.netty.channel.unix.UnixChannelUtil.computeRemoteAddr;
 
-abstract class AbstractIOUringChannel extends AbstractChannel implements UnixChannel {
-    private static final InternalLogger LOGGER = InternalLoggerFactory.getInstance(AbstractIOUringChannel.class);
+abstract class AbstractIOUringChannel<P extends UnixChannel>
+        extends AbstractChannel<P, SocketAddress, SocketAddress>
+        implements UnixChannel {
+    private static final Logger LOGGER = LoggerFactory.getLogger(AbstractIOUringChannel.class);
     private static final int MAX_READ_AHEAD_PACKETS = 8;
     private static final AtomicInteger CONNECT_ID_COUNTER = new AtomicInteger();
 
@@ -73,35 +72,29 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
     protected volatile SocketAddress remote;
 
     protected SubmissionQueue submissionQueue;
+    protected WriteSink writeSink;
     protected int currentCompletionResult;
     protected short currentCompletionData;
 
+    private final Promise<Executor> prepareClosePromise;
     private final Runnable pendingRead;
     private final Runnable rdHupRead;
 
     private short lastReadId;
     private boolean readPendingRegister;
     private boolean readPendingConnect;
-    private ByteBuffer remoteAddressMem;
+    private Buffer connectRemoteAddressMem;
     private boolean scheduledRdHup;
     private boolean receivedRdHup;
     private boolean submittedClose;
-    private boolean wasReadPendingAlready;
-    private ChannelPromise delayedClose;
-
-    /**
-     * The future of the current connection attempt.  If not null, subsequent connection attempts will fail.
-     */
-    private ChannelPromise connectPromise;
-    private ScheduledFuture<?> connectTimeoutFuture;
-    private SocketAddress requestedRemoteAddress;
-    private ByteBuffer remoteAddressMemory;
-    private MsgHdrMemoryArray msgHdrMemoryArray;
 
     private short lastConnectId;
 
-    protected AbstractIOUringChannel(final Channel parent, LinuxSocket socket, SocketAddress remote, boolean active) {
-        super(parent);
+    protected AbstractIOUringChannel(P parent, EventLoop eventLoop, boolean supportingDisconnect,
+                                     ReadHandleFactory defaultReadHandleFactory,
+                                     WriteHandleFactory defaultWriteHandleFactory,
+                                     LinuxSocket socket, SocketAddress remote, boolean active) {
+        super(parent, eventLoop, supportingDisconnect, defaultReadHandleFactory, defaultWriteHandleFactory);
         this.socket = socket;
         this.active = active;
         if (active) {
@@ -111,6 +104,7 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         } else if (remote != null) {
             this.remote = remote;
         }
+        prepareClosePromise = eventLoop.newPromise();
         pendingRead = this::submitReadForPending;
         rdHupRead = this::submitReadForRdHup;
         readsPending = new ObjectRing<>();
@@ -139,8 +133,7 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         } else {
             local = localAddress;
         }
-        // ZTOFO :Fix me
-        //cacheAddresses(local, remoteAddress());
+        cacheAddresses(local, remoteAddress());
     }
 
     protected static void checkResolvable(InetSocketAddress addr) {
@@ -149,20 +142,18 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         }
     }
 
-    // TODO: Fix me
     protected final boolean fetchLocalAddress() {
         return socket.protocolFamily() != SocketProtocolFamily.UNIX;
     }
 
     @Override
-    protected void doBeginRead() throws Exception {
+    protected void doRead(boolean wasReadPendingAlready) throws Exception {
         // Schedule a read operation. When completed, we'll get a callback to readComplete.
         if (submissionQueue == null) {
             readPendingRegister = true;
             return;
         }
         if (!wasReadPendingAlready) {
-            wasReadPendingAlready = true;
             submitRead();
         }
     }
@@ -175,8 +166,9 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         boolean morePackets = bufferSize > 0;
 
         while (morePackets) {
-            ByteBuf readBuffer = alloc().directBuffer(bufferSize);
+            Buffer readBuffer = readBufferAllocator().allocate(bufferSize);
             assert readBuffer.isDirect();
+            assert readBuffer.countWritableComponents() == 1;
             sumPackets++;
             morePackets = sumPackets < maxPackets && (bufferSize = nextReadBufferSize()) > 0;
             submissionQueue.link(morePackets);
@@ -191,9 +183,9 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         if (bufferSize == 0) {
             return;
         }
-        ByteBuf readBuffer = alloc().directBuffer(bufferSize);
+        Buffer readBuffer = readBufferAllocator().allocate(bufferSize);
         assert readBuffer.isDirect();
-        assert readBuffer.hasMemoryAddress();
+        assert readBuffer.countWritableComponents() == 1;
         short readId = ++lastReadId;
         submitReadForReadBuffer(readBuffer, readId, true, readsPending);
     }
@@ -211,39 +203,43 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
     }
 
     protected int nextReadBufferSize() {
-        // TODO: Fix me
-        return 16 * 1024; // readHandle().prepareRead();
+        return readHandle().prepareRead();
     }
 
-    protected void submitReadForReadBuffer(ByteBuf buffer, short readId, boolean nonBlocking,
+    protected void submitReadForReadBuffer(Buffer buffer, short readId, boolean nonBlocking,
                                              ObjLongConsumer<Object> pendingConsumer) {
-        int flags = nonBlocking ? Native.MSG_DONTWAIT : 0;
-        long udata = submissionQueue.addRecv(fd().intValue(),
-                buffer.memoryAddress(), buffer.writerIndex(), buffer.writableBytes(), flags, readId);
-        pendingConsumer.accept(buffer, udata);
+        try (var itr = buffer.forEachComponent()) {
+            var cmp = itr.firstWritable();
+            assert cmp != null;
+            long address = cmp.writableNativeAddress();
+            int flags = nonBlocking ? Native.MSG_DONTWAIT : 0;
+            long udata = submissionQueue.addRecv(
+                    fd().intValue(), address, 0, cmp.writableBytes(), flags, readId);
+            pendingConsumer.accept(buffer, udata);
+        }
     }
 
+    @Override
     protected void doClearScheduledRead() {
         // Using the lastReadId to differentiate our reads, means we avoid accidentally cancelling any future read.
         while (readsPending.poll()) {
             Object obj = readsPending.getPolledObject();
             long udata = readsPending.getPolledStamp();
-            ReferenceCountUtil.touch(obj, "read cancelled");
+            Resource.touch(obj, "read cancelled");
             cancelledReads.put(udata, obj);
             submissionQueue.addCancel(fd().intValue(), udata);
         }
     }
 
     void readComplete(int res, long udata) {
-        assert eventLoop().inEventLoop();
+        assert executor().inEventLoop();
         if (res == Native.ERRNO_ECANCELED_NEGATIVE || res == Errors.ERRNO_EAGAIN_NEGATIVE) {
             Object obj = cancelledReads.remove(udata);
             if (obj == null) {
                 obj = readsPending.remove(udata);
             }
             if (obj != null) {
-                ReferenceCountUtil.safeRelease(obj);
-                //SilentDispose.dispose(obj, logger());
+                SilentDispose.dispose(obj, logger());
             }
             return;
         }
@@ -257,20 +253,18 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         }
         if (obj != null) {
             if (res >= 0) {
-                ReferenceCountUtil.touch(obj, "read completed");
+                Resource.touch(obj, "read completed");
                 readsCompleted.push(prepareCompletedRead(obj, res), udata);
             } else {
-                //SilentDispose.dispose(obj, logger());
-                ReferenceCountUtil.safeRelease(obj);
+                SilentDispose.dispose(obj, logger());
                 readsCompleted.push(new Failure(res), udata);
             }
         }
     }
 
     protected Object prepareCompletedRead(Object obj, int result) {
-        ByteBuf buffer = (ByteBuf) obj;
-        buffer.writerIndex(buffer.writerIndex() + result);
-        return buffer;
+        ((Buffer) obj).skipWritableBytes(result);
+        return obj;
     }
 
     void ioLoopCompleted() {
@@ -303,6 +297,18 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         return false;
     }
 
+    protected final BufferAllocator ioBufferAllocator() {
+        BufferAllocator allocator = bufferAllocator();
+        if (allocator.getAllocationType() == StandardAllocationTypes.OFF_HEAP) {
+            return allocator;
+        }
+        return DefaultBufferAllocators.offHeapAllocator();
+    }
+
+    @Override
+    protected final BufferAllocator readBufferAllocator() {
+        return ioBufferAllocator();
+    }
 
     /**
      * Process the given read.
@@ -326,6 +332,17 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         }
     }
 
+    @NotNull
+    protected Buffer intoDirectBuffer(Buffer buf, boolean dispose) {
+        BufferAllocator allocator = ioBufferAllocator();
+        Buffer copy = allocator.allocate(buf.readableBytes());
+        copy.writeBytes(buf);
+        if (dispose) {
+            buf.close();
+        }
+        return copy;
+    }
+
     @Override
     protected void writeLoop(WriteSink writeSink) {
         this.writeSink = writeSink;
@@ -347,221 +364,40 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
 
     abstract void writeComplete(int result, long udata);
 
-    private abstract class IOUringUnsafe extends AbstractUnsafe {
-        @Override
-        public void connect(
-                final SocketAddress remoteAddress, final SocketAddress localAddress, final ChannelPromise promise) {
-            // Don't mark the connect promise as uncancellable as in fact we can cancel it as it is using
-            // non-blocking io.
-            if (promise.isDone() || !ensureOpen(promise)) {
-                return;
-            }
-
-            if (delayedClose != null) {
-                promise.tryFailure(annotateConnectException(new ClosedChannelException(), remoteAddress));
-                return;
-            }
-            try {
-                if (connectPromise != null) {
-                    throw new ConnectionPendingException();
-                }
-                if (localAddress instanceof InetSocketAddress) {
-                    checkResolvable((InetSocketAddress) localAddress);
-                }
-
-                if (remoteAddress instanceof InetSocketAddress) {
-                    checkResolvable((InetSocketAddress) remoteAddress);
-                }
-
-                if (remote != null) {
-                    // Check if already connected before trying to connect. This is needed as connect(...) will not return -1
-                    // and set errno to EISCONN if a previous connect(...) attempt was setting errno to EINPROGRESS and finished
-                    // later.
-                    throw new AlreadyConnectedException();
-                }
-
-                if (localAddress != null) {
-                    socket.bind(localAddress);
-                }
-
-                InetSocketAddress inetSocketAddress = (InetSocketAddress) remoteAddress;
-
-                submitConnect(inetSocketAddress);
-            } catch (Throwable t) {
-                closeIfClosed();
-                promise.tryFailure(annotateConnectException(t, remoteAddress));
-                return;
-            }
-            connectPromise = promise;
-            requestedRemoteAddress = remoteAddress;
-            // Schedule connect timeout.
-            int connectTimeoutMillis = config().getConnectTimeoutMillis();
-            if (connectTimeoutMillis > 0) {
-                connectTimeoutFuture = eventLoop().schedule(new Runnable() {
-                    @Override
-                    public void run() {
-                        ChannelPromise connectPromise = AbstractIOUringChannel.this.connectPromise;
-                        if (connectPromise != null && !connectPromise.isDone() &&
-                                connectPromise.tryFailure(new ConnectTimeoutException(
-                                        "connection timed out: " + remoteAddress))) {
-                            close(voidPromise());
-                        }
-                    }
-                }, connectTimeoutMillis, TimeUnit.MILLISECONDS);
-            }
-
-            promise.addListener(new ChannelFutureListener() {
-                @Override
-                public void operationComplete(ChannelFuture future) {
-                    // If the connect future is cancelled we also cancel the timeout and close the
-                    // underlying socket.
-                    if (future.isCancelled()) {
-                        cancelConnectTimeoutFuture();
-                        connectPromise = null;
-                        close(voidPromise());
-                    }
-                }
-            });
-        }
-
-
-        private boolean isConnectPending() {
-            return connectPromise != null;
-        }
-
-        /**
-         * Should be called once the connect request is ready to be completed and {@link #isConnectPending()}
-         * is {@code true}.
-         * Calling this method if no {@link #isConnectPending() connect is pending} will result in an
-         * {@link AlreadyConnectedException}.
-         *
-         * @return {@code true} if the connect operation completed, {@code false} otherwise.
-         */
-        protected final boolean finishConnect() {
-            // Note this method is invoked by the event loop only if the connection attempt was
-            // neither cancelled nor timed out.
-            assert eventLoop().inEventLoop();
-
-            if (!isConnectPending()) {
-                throw new AlreadyConnectedException();
-            }
-
-            boolean connectStillInProgress = false;
-            try {
-                boolean wasActive = isActive();
-                if (!doFinishConnect(requestedRemoteAddress)) {
-                    connectStillInProgress = true;
-                    return false;
-                }
-                requestedRemoteAddress = null;
-                fulfillConnectPromise(connectPromise, wasActive);
-            } catch (Throwable t) {
-                fulfillConnectPromise(connectPromise, annotateConnectException(t, requestedRemoteAddress));
-            } finally {
-                if (!connectStillInProgress) {
-                    // Check for null as the connectTimeoutFuture is only created if a connectTimeoutMillis > 0 is used
-                    // See https://github.com/netty/netty/issues/1770
-                    if (connectTimeoutFuture != null) {
-                        connectTimeoutFuture.cancel(false);
-                    }
-                    connectPromise = null;
-                }
-            }
-            return true;
-        }
-
-        private void fulfillConnectPromise(ChannelPromise promise, Throwable cause) {
-            if (promise == null) {
-                // Closed via cancellation and the promise has been notified already.
-                return;
-            }
-
-            // Use tryFailure() instead of setFailure() to avoid the race against cancel().
-            promise.tryFailure(cause);
-            closeIfClosed();
-        }
-
-        private void fulfillConnectPromise(ChannelPromise promise, boolean wasActive) {
-            if (promise == null) {
-                // Closed via cancellation and the promise has been notified already.
-                return;
-            }
-            active = true;
-
-            if (local == null) {
-                local = socket.localAddress();
-            }
-            computeRemote();
-
-            // Register POLLRDHUP
-            submitPollRdHup();
-
-            // TODO: is the correct ?
-            if (readPendingConnect) {
-                submitRead();
-                readPendingConnect = false;
-            }
-
-            // Get the state as trySuccess() may trigger an ChannelFutureListener that will close the
-            // Channel.
-            // We still need to ensure we call fireChannelActive() in this case.
-            boolean active = isActive();
-
-            // trySuccess() will return false if a user cancelled the connection attempt.
-            boolean promiseSet = promise.trySuccess();
-
-            // Regardless if the connection attempt was cancelled, channelActive() event should be triggered,
-            // because what happened is what happened.
-            if (!wasActive && active) {
-                pipeline().fireChannelActive();
-            }
-
-            // If a user cancelled the connection attempt, close the channel, which is followed by channelInactive().
-            if (!promiseSet) {
-                close(voidPromise());
-            }
-        }
-
-    }
-
-    private void freeRemoteAddressMemory() {
-        if (remoteAddressMemory != null) {
-            Buffer.free(remoteAddressMemory);
-            remoteAddressMemory = null;
-        }
-    }
-
-    private void computeRemote() {
-        if (requestedRemoteAddress instanceof InetSocketAddress) {
-            remote = computeRemoteAddr((InetSocketAddress) requestedRemoteAddress, socket.remoteAddress());
-        }
-    }
-
-
-    private void cancelConnectTimeoutFuture() {
-        if (connectTimeoutFuture != null) {
-            connectTimeoutFuture.cancel(false);
-            connectTimeoutFuture = null;
-        }
-    }
-
-    protected void submitConnect(InetSocketAddress remoteSocketAddr) {
-        remoteAddressMemory = Buffer.allocateDirectWithNativeOrder(Native.SIZEOF_SOCKADDR_STORAGE);
-        long remoteAddressMemoryAddress = Buffer.memoryAddress(remoteAddressMemory);
-        SockaddrIn.write(socket.isIpv6(), remoteAddressMemoryAddress, remoteSocketAddr);
-        lastConnectId = nextConnectId();
-        submissionQueue.addConnect(fd().intValue(), remoteAddressMemoryAddress,
-                Native.SIZEOF_SOCKADDR_STORAGE, lastConnectId);
-    }
-
+    /**
+     * Connect to the remote peer
+     */
     @Override
-    protected Object filterOutboundMessage(Object msg) {
-        if (msg instanceof ByteBuf) {
-            ByteBuf buf = (ByteBuf) msg;
-            return UnixChannelUtil.isBufferCopyNeededForWrite(buf)? newDirectBuffer(buf) : buf;
+    protected boolean doConnect(SocketAddress remoteAddress, SocketAddress localAddress, Buffer initialData)
+            throws Exception {
+        if (localAddress instanceof InetSocketAddress) {
+            checkResolvable((InetSocketAddress) localAddress);
         }
 
-        throw new UnsupportedOperationException("unsupported message type");
+        InetSocketAddress remoteSocketAddr = remoteAddress instanceof InetSocketAddress
+                ? (InetSocketAddress) remoteAddress : null;
+        if (remoteSocketAddr != null) {
+            checkResolvable(remoteSocketAddr);
+        }
+
+        if (localAddress != null) {
+            socket.bind(localAddress);
+        }
+
+        submitConnect(remoteSocketAddr, initialData);
+        return false;
+    }
+
+    protected void submitConnect(InetSocketAddress remoteSocketAddr, Buffer initialData) throws IOException {
+        Buffer addrBuf = ioBufferAllocator().allocate(Native.SIZEOF_SOCKADDR_STORAGE);
+        try (var itr = addrBuf.forEachComponent()) {
+            var cmp = itr.firstWritable();
+            SockaddrIn.write(socket.isIpv6(), cmp.writableNativeAddress(), remoteSocketAddr);
+            lastConnectId = nextConnectId();
+            submissionQueue.addConnect(fd().intValue(), cmp.writableNativeAddress(),
+                    Native.SIZEOF_SOCKADDR_STORAGE, lastConnectId);
+        }
+        connectRemoteAddressMem = addrBuf;
     }
 
     private static short nextConnectId() {
@@ -583,17 +419,20 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
             return;
         }
         currentCompletionResult = res;
-        freeRemoteAddressMemory();
-
-        ((IOUringUnsafe) unsafe()).finishConnect();
+        if (connectRemoteAddressMem != null) { // Can be null if we connected with TCP Fast Open.
+            SilentDispose.dispose(connectRemoteAddressMem, logger());
+            connectRemoteAddressMem = null;
+        }
+        finishConnect();
     }
 
+    @Override
     protected boolean doFinishConnect(SocketAddress requestedRemoteAddress) throws Exception {
         int res = currentCompletionResult;
         currentCompletionResult = 0;
         currentCompletionData = 0;
         if (res < 0) {
-            IOException nativeException = Errors.newIOException("connect", res);
+            var nativeException = Errors.newIOException("connect", res);
             if (res == Errors.ERROR_ECONNREFUSED_NEGATIVE) {
                 ConnectException refused = new ConnectException(nativeException.getMessage());
                 refused.initCause(nativeException);
@@ -685,7 +524,10 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
     protected void doClose() {
         tryDisposeAll(readsPending);
         tryDisposeAll(readsCompleted);
-        freeRemoteAddressMemory();
+        if (connectRemoteAddressMem != null) {
+            SilentDispose.trySilentDispose(connectRemoteAddressMem, logger());
+            connectRemoteAddressMem = null;
+        }
     }
 
     private void tryDisposeAll(ObjectRing<?> ring) {
@@ -705,9 +547,15 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
 
     void closeComplete(int res, long udata) {
         if (socket.markClosed()) {
-            delayedClose.setSuccess();
+            prepareClosePromise.setSuccess(executor());
         }
     }
+
+    @Override
+    protected abstract void doShutdown(ChannelShutdownDirection direction) throws Exception;
+
+    @Override
+    public abstract boolean isShutdown(ChannelShutdownDirection direction);
 
     @Override
     public FileDescriptor fd() {
@@ -724,47 +572,262 @@ abstract class AbstractIOUringChannel extends AbstractChannel implements UnixCha
         return active;
     }
 
-
-    protected final ByteBuf newDirectBuffer(ByteBuf buf) {
-        return newDirectBuffer(buf, buf);
-    }
-
-    protected final ByteBuf newDirectBuffer(Object holder, ByteBuf buf) {
-        final int readableBytes = buf.readableBytes();
-        if (readableBytes == 0) {
-            ReferenceCountUtil.release(holder);
-            return Unpooled.EMPTY_BUFFER;
-        }
-
-        final ByteBufAllocator alloc = alloc();
-        if (alloc.isDirectBufferPooled()) {
-            return newDirectBuffer0(holder, buf, alloc, readableBytes);
-        }
-
-        final ByteBuf directBuf = ByteBufUtil.threadLocalDirectBuffer();
-        if (directBuf == null) {
-            return newDirectBuffer0(holder, buf, alloc, readableBytes);
-        }
-
-        directBuf.writeBytes(buf, buf.readerIndex(), readableBytes);
-        ReferenceCountUtil.safeRelease(holder);
-        return directBuf;
-    }
-
-    private static ByteBuf newDirectBuffer0(Object holder, ByteBuf buf, ByteBufAllocator alloc, int capacity) {
-        final ByteBuf directBuf = alloc.directBuffer(capacity);
-        directBuf.writeBytes(buf, buf.readerIndex(), capacity);
-        ReferenceCountUtil.safeRelease(holder);
-        return directBuf;
-    }
-
     @Override
     public String toString() {
         return getClass().getSimpleName() + "(fd: " + socket.intValue() + ')' + super.toString();
     }
 
-    protected abstract InternalLogger logger();
+    protected abstract Logger logger();
 
+    @SuppressWarnings("unchecked")
+    @Override
+    protected <T> T getExtendedOption(ChannelOption<T> option) {
+        if (option == ChannelOption.SO_BROADCAST) {
+            return (T) Boolean.valueOf(isBroadcast());
+        }
+        if (option == ChannelOption.SO_RCVBUF) {
+            return (T) Integer.valueOf(getReceiveBufferSize());
+        }
+        if (option == ChannelOption.SO_SNDBUF) {
+            return (T) Integer.valueOf(getSendBufferSize());
+        }
+        if (option == ChannelOption.SO_LINGER) {
+            return (T) Integer.valueOf(getSoLinger());
+        }
+        if (option == ChannelOption.SO_REUSEADDR) {
+            return (T) Boolean.valueOf(isReuseAddress());
+        }
+        if (option == ChannelOption.IP_MULTICAST_LOOP_DISABLED) {
+            return (T) Boolean.valueOf(isLoopbackModeDisabled());
+        }
+        if (option == ChannelOption.IP_MULTICAST_IF) {
+            return (T) getNetworkInterface();
+        }
+        if (option == ChannelOption.IP_MULTICAST_TTL) {
+            return (T) Integer.valueOf(getTimeToLive());
+        }
+        if (option == ChannelOption.IP_TOS) {
+            return (T) Integer.valueOf(getTrafficClass());
+        }
+        if (option == UnixChannelOption.SO_REUSEPORT) {
+            return (T) Boolean.valueOf(isReusePort());
+        }
+        return super.getExtendedOption(option);
+    }
+
+    @Override
+    protected <T> void setExtendedOption(ChannelOption<T> option, T value) {
+        if (option == ChannelOption.SO_BROADCAST) {
+            setBroadcast((Boolean) value);
+        } else if (option == ChannelOption.SO_RCVBUF) {
+            setReceiveBufferSize((Integer) value);
+        } else if (option == ChannelOption.SO_SNDBUF) {
+            setSendBufferSize((Integer) value);
+        } else if (option == ChannelOption.SO_LINGER) {
+            setSoLinger((Integer) value);
+        } else if (option == ChannelOption.SO_REUSEADDR) {
+            setReuseAddress((Boolean) value);
+        } else if (option == ChannelOption.IP_MULTICAST_LOOP_DISABLED) {
+            setLoopbackModeDisabled((Boolean) value);
+        } else if (option == ChannelOption.IP_MULTICAST_IF) {
+            setNetworkInterface((NetworkInterface) value);
+        } else if (option == ChannelOption.IP_MULTICAST_TTL) {
+            setTimeToLive((Integer) value);
+        } else if (option == ChannelOption.IP_TOS) {
+            setTrafficClass((Integer) value);
+        } else if (option == UnixChannelOption.SO_REUSEPORT) {
+            setReusePort((Boolean) value);
+        } else {
+            super.setExtendedOption(option, value);
+        }
+    }
+
+    @Override
+    protected boolean isExtendedOptionSupported(ChannelOption<?> option) {
+        if (option == ChannelOption.SO_BROADCAST ||
+                option == ChannelOption.SO_RCVBUF ||
+                option == ChannelOption.SO_SNDBUF ||
+                option == ChannelOption.SO_LINGER ||
+                option == ChannelOption.SO_REUSEADDR ||
+                option == ChannelOption.IP_MULTICAST_LOOP_DISABLED ||
+                option == ChannelOption.IP_MULTICAST_IF ||
+                option == ChannelOption.IP_MULTICAST_TTL ||
+                option == ChannelOption.IP_TOS ||
+                option == UnixChannelOption.SO_REUSEPORT) {
+            return true;
+        }
+        return super.isExtendedOptionSupported(option);
+    }
+
+    private int getSendBufferSize() {
+        try {
+            return socket.getSendBufferSize();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setSendBufferSize(int sendBufferSize) {
+        try {
+            socket.setSendBufferSize(sendBufferSize);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private int getSoLinger() {
+        try {
+            return socket.getSoLinger();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setSoLinger(int soLinger) {
+        try {
+            socket.setSoLinger(soLinger);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private int getReceiveBufferSize() {
+        try {
+            return socket.getReceiveBufferSize();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setReceiveBufferSize(int receiveBufferSize) {
+        try {
+            socket.setReceiveBufferSize(receiveBufferSize);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private int getTrafficClass() {
+        try {
+            return socket.getTrafficClass();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setTrafficClass(int trafficClass) {
+        try {
+            socket.setTrafficClass(trafficClass);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private boolean isReuseAddress() {
+        try {
+            return socket.isReuseAddress();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setReuseAddress(boolean reuseAddress) {
+        try {
+            socket.setReuseAddress(reuseAddress);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private boolean isBroadcast() {
+        try {
+            return socket.isBroadcast();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setBroadcast(boolean broadcast) {
+        try {
+            socket.setBroadcast(broadcast);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private boolean isLoopbackModeDisabled() {
+        try {
+            return socket.isLoopbackModeDisabled();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setLoopbackModeDisabled(boolean loopbackModeDisabled) {
+        try {
+            socket.setLoopbackModeDisabled(loopbackModeDisabled);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private int getTimeToLive() {
+        try {
+            return socket.getTimeToLive();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setTimeToLive(int ttl) {
+        try {
+            socket.setTimeToLive(ttl);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    protected NetworkInterface getNetworkInterface() {
+        try {
+            return socket.getNetworkInterface();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    private void setNetworkInterface(NetworkInterface networkInterface) {
+        try {
+            socket.setNetworkInterface(networkInterface);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
+     * Returns {@code true} if the SO_REUSEPORT option is set.
+     */
+    private boolean isReusePort() {
+        try {
+            return socket.isReusePort();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
+     * Set the SO_REUSEPORT option on the underlying Channel. This will allow to bind multiple
+     * {@link IOUringDatagramChannel}s to the same port and so accept connections with multiple threads.
+     * <p>
+     * Be aware this method needs be called before {@link IOUringDatagramChannel#bind(java.net.SocketAddress)} to have
+     * any affect.
+     */
+    private void setReusePort(boolean reusePort) {
+        try {
+            socket.setReusePort(reusePort);
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
 
     boolean isIpv6() {
         return socket.isIpv6();

@@ -15,16 +15,15 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.bootstrap.ServerBootstrap;
-import io.netty5.channel.Channel;
-import io.netty5.channel.ChannelHandlerAdapter;
-import io.netty5.channel.ChannelHandlerContext;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.MultithreadEventLoopGroup;
-import io.netty5.util.NetUtil;
-import io.netty5.util.concurrent.Future;
-import io.netty5.util.concurrent.ImmediateEventExecutor;
-import io.netty5.util.concurrent.Promise;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.util.NetUtil;
+import io.netty.util.concurrent.ImmediateEventExecutor;
+import io.netty.util.concurrent.Promise;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -67,13 +66,13 @@ public class IOUringRemoteIpTest {
 
     private static void testRemoteAddress(InetAddress server, InetAddress client) throws Exception {
         final Promise<SocketAddress> promise = ImmediateEventExecutor.INSTANCE.newPromise();
-        EventLoopGroup bossGroup = new MultithreadEventLoopGroup(1, IOUring.newFactory());
+        EventLoopGroup bossGroup = new MultiThreadIoEventLoopGroup(1, IOUring.newFactory());
         Socket socket = new Socket();
         try {
             ServerBootstrap b = new ServerBootstrap();
             b.group(bossGroup)
                     .channel(IOUringServerSocketChannel.class)
-                    .childHandler(new ChannelHandlerAdapter() {
+                    .childHandler(new ChannelInboundHandlerAdapter() {
                         @Override
                         public void channelActive(ChannelHandlerContext ctx) {
                             promise.setSuccess(ctx.channel().remoteAddress());
@@ -82,19 +81,19 @@ public class IOUringRemoteIpTest {
                     });
 
             // Start the server.
-            Future<Channel> f;
+            ChannelFuture f;
             InetSocketAddress connectAddress;
             if (server == null) {
-                f = b.bind(0).asStage().sync().future();
+                f = b.bind(0).sync();
                 connectAddress = new InetSocketAddress(client,
-                        ((InetSocketAddress) f.getNow().localAddress()).getPort());
+                        ((InetSocketAddress) f.channel().localAddress()).getPort());
             } else {
                 try {
-                    f = b.bind(server, 0).asStage().sync().future();
+                    f = b.bind(server, 0).sync();
                 } catch (Throwable cause) {
                     throw new TestAbortedException("Bind failed, address family not supported ?", cause);
                 }
-                connectAddress = (InetSocketAddress) f.getNow().localAddress();
+                connectAddress = (InetSocketAddress) f.channel().localAddress();
             }
 
             try {
@@ -104,9 +103,9 @@ public class IOUringRemoteIpTest {
             }
             socket.connect(connectAddress);
 
-            InetSocketAddress addr = (InetSocketAddress) promise.asFuture().asStage().get();
+            InetSocketAddress addr = (InetSocketAddress) promise.get();
             assertEquals(socket.getLocalSocketAddress(), addr);
-            f.getNow().close().asStage().sync();
+            f.channel().close().sync();
         } finally {
             // Shut down all event loops to terminate all threads.
             bossGroup.shutdownGracefully();

@@ -15,10 +15,10 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.buffer.Buffer;
-import io.netty5.buffer.BufferAllocator;
-import io.netty5.buffer.DefaultBufferAllocators;
-import io.netty5.channel.unix.FileDescriptor;
+import io.netty.buffer.Buffer;
+import io.netty.buffer.BufferAllocator;
+import io.netty.buffer.DefaultBufferAllocators;
+import io.netty.channel.unix.FileDescriptor;
 import org.junit.jupiter.api.AutoClose;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;

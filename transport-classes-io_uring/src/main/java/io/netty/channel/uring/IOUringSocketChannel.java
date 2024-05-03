@@ -15,28 +15,25 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.buffer.Buffer;
-import io.netty5.channel.AbstractChannel;
-import io.netty5.channel.AdaptiveReadHandleFactory;
-import io.netty5.channel.ChannelOption;
-import io.netty5.channel.ChannelPipeline;
-import io.netty5.channel.ChannelShutdownDirection;
-import io.netty5.channel.EventLoop;
-import io.netty5.channel.FileRegion;
-import io.netty5.channel.ReadHandleFactory;
-import io.netty5.channel.WriteHandleFactory;
-import io.netty5.channel.socket.SocketChannel;
-import io.netty5.channel.socket.SocketChannelWriteHandleFactory;
-import io.netty5.channel.socket.SocketProtocolFamily;
-import io.netty5.channel.unix.Errors;
-import io.netty5.channel.unix.IovArray;
-import io.netty5.channel.unix.UnixChannelUtil;
-import io.netty5.util.concurrent.Future;
-import io.netty5.util.concurrent.FutureListener;
-import io.netty5.util.concurrent.Promise;
-import io.netty5.util.internal.StringUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import io.netty.buffer.Buffer;
+import io.netty.channel.AbstractChannel;
+import io.netty.channel.AdaptiveReadHandleFactory;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelShutdownDirection;
+import io.netty.channel.EventLoop;
+import io.netty.channel.FileRegion;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.SocketProtocolFamily;
+import io.netty.channel.unix.Errors;
+import io.netty.channel.unix.IovArray;
+import io.netty.channel.unix.UnixChannelUtil;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.FutureListener;
+import io.netty.util.concurrent.Promise;
+import io.netty.util.internal.StringUtil;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -46,13 +43,13 @@ import java.nio.ByteBuffer;
 import java.nio.channels.NotYetConnectedException;
 import java.nio.channels.WritableByteChannel;
 
-import static io.netty5.channel.unix.Limits.IOV_MAX;
-import static io.netty5.channel.unix.Limits.SSIZE_MAX;
+import static io.netty.channel.unix.Limits.IOV_MAX;
+import static io.netty.channel.unix.Limits.SSIZE_MAX;
 import static java.util.Objects.requireNonNull;
 
 public final class IOUringSocketChannel extends AbstractIOUringChannel<IOUringServerSocketChannel>
         implements SocketChannel {
-    private static final Logger LOGGER = LoggerFactory.getLogger(IOUringDatagramChannel.class);
+    private static final InternalLogger LOGGER = InternalLoggerFactory.getLogger(IOUringDatagramChannel.class);
     private static final short IS_WRITE = 0;
     private static final short IS_CONNECT = 1;
 

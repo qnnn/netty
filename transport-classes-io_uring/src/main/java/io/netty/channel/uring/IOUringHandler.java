@@ -15,21 +15,17 @@
  */
 package io.netty.channel.uring;
 
-import io.netty.channel.IoEventLoop;
-import io.netty.channel.IoHandlerFactory;
-import io.netty.channel.IoExecutionContext;
-import io.netty.channel.IoHandle;
-import io.netty.channel.IoHandler;
-import io.netty.channel.IoOpt;
-import io.netty.channel.IoRegistration;
-import io.netty.channel.unix.FileDescriptor;
-import io.netty.util.collection.IntObjectHashMap;
-import io.netty.util.collection.IntObjectMap;
-import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
-
+import io.netty5.channel.IoExecutionContext;
+import io.netty5.channel.IoHandle;
+import io.netty5.channel.IoHandler;
+import io.netty5.channel.unix.FileDescriptor;
+import io.netty5.util.collection.IntObjectHashMap;
+import io.netty5.util.collection.IntObjectMap;
+import io.netty5.util.internal.PlatformDependent;
+import io.netty5.util.internal.StringUtil;
+import org.jetbrains.annotations.NotNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -43,12 +39,12 @@ import static java.util.Objects.requireNonNull;
  * {@link IoHandler} which is implemented in terms of the Linux-specific {@code io_uring} API.
  */
 final class IOUringHandler implements IoHandler, CompletionCallback {
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(IOUringHandler.class);
+    private static final Logger logger = LoggerFactory.getLogger(IOUringHandler.class);
     private static final short RING_CLOSE = 1;
 
     private final RingBuffer ringBuffer;
-    private final IntObjectMap<AbstractIOUringChannel> channels;
-    private final ArrayDeque<AbstractIOUringChannel> touchedChannels;
+    private final IntObjectMap<AbstractIOUringChannel<?>> channels;
+    private final ArrayDeque<AbstractIOUringChannel<?>> touchedChannels;
 
     private final AtomicBoolean eventfdAsyncNotify = new AtomicBoolean();
     private final FileDescriptor eventfd;
@@ -90,7 +86,7 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
     }
 
     private void notifyIoFinished() {
-        AbstractIOUringChannel ch;
+        AbstractIOUringChannel<?> ch;
         while ((ch = touchedChannels.poll()) != null) {
             ch.ioLoopCompleted();
         }
@@ -113,7 +109,7 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
             // We don't care about the result of async cancels; they are best-effort.
             return;
         }
-        AbstractIOUringChannel ch = channels.get(fd);
+        AbstractIOUringChannel<?> ch = channels.get(fd);
         if (ch == null) {
             logger.debug("ignoring {} completion for unknown channel (fd={}, res={})",
                     Native.opToStr(op), fd, res);
@@ -175,12 +171,12 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
         shuttingDown = true;
         CompletionQueue completionQueue = ringBuffer.ioUringCompletionQueue();
         SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
-        AbstractIOUringChannel[] chs = channels.values().toArray(AbstractIOUringChannel[]::new);
+        AbstractIOUringChannel<?>[] chs = channels.values().toArray(AbstractIOUringChannel[]::new);
 
         // Ensure all previously submitted IOs get to complete before closing all fds.
         submissionQueue.addNop(ringBuffer.fd(), Native.IOSQE_IO_DRAIN, (short) 0);
 
-        for (AbstractIOUringChannel ch : chs) {
+        for (AbstractIOUringChannel<?> ch : chs) {
             ch.close();
             if (submissionQueue.count() > 0) {
                 submissionQueue.submit();
@@ -274,8 +270,8 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
     }
 
     @Override
-    public IoRegistration register(IoEventLoop eventLoop, IoHandle handle, IoOpt opt) throws Exception {
-        AbstractIOUringChannel ch = cast(handle);
+    public void register(IoHandle handle) throws Exception {
+        AbstractIOUringChannel<?> ch = cast(handle);
         if (shuttingDown) {
             throw new RejectedExecutionException("IoEventLoop is shutting down");
         }
@@ -286,7 +282,8 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
         }
     }
 
-    private void deregister(IoHandle handle) {
+    @Override
+    public void deregister(IoHandle handle) {
         AbstractIOUringChannel<?> ch = cast(handle);
         int fd = ch.fd().intValue();
         AbstractIOUringChannel<?> existing = channels.remove(fd);
@@ -302,6 +299,7 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
         }
     }
 
+    @NotNull
     private static AbstractIOUringChannel<?> cast(IoHandle handle) {
         if (handle instanceof AbstractIOUringChannel) {
             return (AbstractIOUringChannel<?>) handle;
@@ -311,8 +309,8 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
     }
 
     @Override
-    public void wakeup(IoEventLoop eventLoop) {
-        if (!eventLoop.inEventLoop() && !eventfdAsyncNotify.getAndSet(true)) {
+    public void wakeup(boolean inEventLoop) {
+        if (!inEventLoop && !eventfdAsyncNotify.getAndSet(true)) {
             // write to the eventfd which will then trigger an eventfd read completion.
             Native.eventFdWrite(eventfd.intValue(), 1L);
         }
@@ -321,30 +319,5 @@ final class IOUringHandler implements IoHandler, CompletionCallback {
     @Override
     public boolean isCompatible(Class<? extends IoHandle> handleType) {
         return AbstractIOUringChannel.class.isAssignableFrom(handleType);
-    }
-
-
-    public static IoHandlerFactory newFactory() {
-        IOUring.ensureAvailability();
-        return () -> {
-            RingBuffer ringBuffer = Native.createRingBuffer();
-            return new IOUringHandler(ringBuffer);
-        };
-    }
-
-    public static IoHandlerFactory newFactory(int ringSize) {
-        IOUring.ensureAvailability();
-        return () -> {
-            RingBuffer ringBuffer = Native.createRingBuffer(ringSize);
-            return new IOUringHandler(ringBuffer);
-        };
-    }
-
-    public static IoHandlerFactory newFactory(int ringSize, int kernelWorkerOffloadThreshold) {
-        IOUring.ensureAvailability();
-        return () -> {
-            RingBuffer ringBuffer = Native.createRingBuffer(ringSize, kernelWorkerOffloadThreshold);
-            return new IOUringHandler(ringBuffer);
-        };
     }
 }

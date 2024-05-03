@@ -15,8 +15,8 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.channel.unix.Socket;
-import io.netty5.channel.unix.tests.SocketTest;
+import io.netty.channel.unix.Socket;
+import io.netty.channel.unix.tests.SocketTest;
 import org.junit.jupiter.api.BeforeAll;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;

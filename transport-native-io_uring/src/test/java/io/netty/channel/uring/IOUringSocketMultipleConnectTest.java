@@ -15,12 +15,12 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.bootstrap.Bootstrap;
-import io.netty5.bootstrap.ServerBootstrap;
-import io.netty5.channel.EventLoopGroup;
-import io.netty5.channel.nio.AbstractNioChannel;
-import io.netty5.testsuite.transport.TestsuitePermutation;
-import io.netty5.testsuite.transport.socket.SocketMultipleConnectTest;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.AbstractNioChannel;
+import io.netty.testsuite.transport.TestsuitePermutation;
+import io.netty.testsuite.transport.socket.SocketMultipleConnectTest;
 import org.junit.jupiter.api.BeforeAll;
 
 import java.util.ArrayList;

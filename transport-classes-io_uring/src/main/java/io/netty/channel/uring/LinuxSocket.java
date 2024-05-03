@@ -15,14 +15,13 @@
  */
 package io.netty.channel.uring;
 
-import io.netty.channel.ChannelException;
-import io.netty.channel.socket.InternetProtocolFamily;
-import io.netty.channel.socket.SocketProtocolFamily;
-import io.netty.channel.unix.Errors;
-import io.netty.channel.unix.NativeInetAddress;
-import io.netty.channel.unix.PeerCredentials;
-import io.netty.channel.unix.Socket;
-import io.netty.util.internal.SocketUtils;
+import io.netty5.channel.ChannelException;
+import io.netty5.channel.socket.SocketProtocolFamily;
+import io.netty5.channel.unix.Errors;
+import io.netty5.channel.unix.NativeInetAddress;
+import io.netty5.channel.unix.PeerCredentials;
+import io.netty5.channel.unix.Socket;
+import io.netty5.util.internal.SocketUtils;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -42,7 +41,7 @@ final class LinuxSocket extends Socket {
     private static final InetAddress INET_ANY = unsafeInetAddrByName("0.0.0.0");
     private static final long MAX_UINT32_T = 0xFFFFFFFFL;
 
-    private LinuxSocket(int fd, InternetProtocolFamily family, boolean makeBlocking) {
+    private LinuxSocket(int fd, SocketProtocolFamily family, boolean makeBlocking) {
         super(fd, family);
         if (makeBlocking) {
             try {

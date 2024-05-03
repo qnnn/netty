@@ -15,7 +15,7 @@
  */
 package io.netty.channel.uring;
 
-import io.netty5.channel.epoll.Epoll;
+import io.netty.channel.epoll.Epoll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
