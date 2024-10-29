@@ -123,7 +123,12 @@ public class EpollEventLoop extends SingleThreadEventLoop {
         if (LOOP_LOAD) {
             final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE
                     .scheduleAtFixedRate(loadCalculator, 0, 5000, TimeUnit.MILLISECONDS);
-            this.addShutdownHook(() -> scheduledFuture.cancel(false));
+            this.addShutdownHook(new Runnable() {
+                @Override
+                public void run() {
+                    scheduledFuture.cancel(false);
+                }
+            });
         }
     }
 
