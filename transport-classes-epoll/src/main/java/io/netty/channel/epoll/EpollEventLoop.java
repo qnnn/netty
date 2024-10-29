@@ -118,7 +118,8 @@ public class EpollEventLoop extends SingleThreadEventLoop {
             return pendingTasks() + (timeoutNanos <= 0 ? 1 : 0);
         });
         if (LOOP_LOAD) {
-            final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE.scheduleAtFixedRate(loadCalculator, 0, 5000, TimeUnit.MILLISECONDS);
+            final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE
+                    .scheduleAtFixedRate(loadCalculator, 0, 5000, TimeUnit.MILLISECONDS);
             this.addShutdownHook(() -> scheduledFuture.cancel(false));
         }
     }
