@@ -88,7 +88,7 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     //    other value T    when EL is waiting with wakeup scheduled at time T
     private final AtomicLong nextWakeupNanos = new AtomicLong(AWAKE);
 
-    private final EventLoopLoadTracker loadCalculator;
+    private final EventLoopLoadTracker loadTracker;
 
     private boolean pendingWakeup;
     private volatile int ioRatio = 50;
@@ -113,7 +113,7 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     }
 
     {
-        this.loadCalculator = new EventLoopLoadTracker(new IntSupplier() {
+        this.loadTracker = new EventLoopLoadTracker(new IntSupplier() {
             @Override
             public int get() throws Exception {
                 long timeoutNanos = deadlineToDelayNanos(nextWakeupNanos.get());
@@ -122,7 +122,7 @@ public class EpollEventLoop extends SingleThreadEventLoop {
         });
         if (LOOP_LOAD) {
             final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE
-                    .scheduleAtFixedRate(loadCalculator, 0, 5000, TimeUnit.MILLISECONDS);
+                    .scheduleAtFixedRate(loadTracker, 0, 5000, TimeUnit.MILLISECONDS);
             this.addShutdownHook(new Runnable() {
                 @Override
                 public void run() {
@@ -614,7 +614,7 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     @Override
     public double loadAvg1() {
         if (LOOP_LOAD) {
-            return loadCalculator.getLoadAvg1();
+            return loadTracker.getLoadAvg1();
         }
         return super.loadAvg1();
     }
@@ -622,7 +622,7 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     @Override
     public double loadAvg5() {
         if (LOOP_LOAD) {
-            return loadCalculator.getLoadAvg5();
+            return loadTracker.getLoadAvg5();
         }
         return super.loadAvg5();
     }
@@ -630,7 +630,7 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     @Override
     public double loadAvg15() {
         if (LOOP_LOAD) {
-            return loadCalculator.getLoadAvg15();
+            return loadTracker.getLoadAvg15();
         }
         return super.loadAvg15();
     }

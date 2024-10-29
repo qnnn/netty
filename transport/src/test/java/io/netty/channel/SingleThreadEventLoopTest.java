@@ -525,7 +525,7 @@ public class SingleThreadEventLoopTest {
 
     @Test
     public void testEventLoopLoadCalculator() {
-        SingleThreadEventLoop.EventLoopLoadTracker loadCalculator =
+        SingleThreadEventLoop.EventLoopLoadTracker loadTracker =
                 new SingleThreadEventLoop.EventLoopLoadTracker(new IntSupplier() {
                     @Override
                     public int get() throws Exception {
@@ -533,12 +533,12 @@ public class SingleThreadEventLoopTest {
                     }
                 });
         for (int i = 0; i < 1000; i++) {
-            loadCalculator.run();
+            loadTracker.run();
         }
         // approaches a load of 1 over time.
-        assertThat(1 - loadCalculator.getLoadAvg1(), lessThan(0.01));
-        assertThat(1 - loadCalculator.getLoadAvg5(), lessThan(0.01));
-        assertThat(1 - loadCalculator.getLoadAvg15(), lessThan(0.01));
+        assertThat(1 - loadTracker.getLoadAvg1(), lessThan(0.01));
+        assertThat(1 - loadTracker.getLoadAvg5(), lessThan(0.01));
+        assertThat(1 - loadTracker.getLoadAvg15(), lessThan(0.01));
     }
 
     private static final class SingleThreadEventLoopA extends SingleThreadEventLoop {

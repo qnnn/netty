@@ -135,7 +135,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
     private final SelectStrategy selectStrategy;
 
-    private final EventLoopLoadTracker loadCalculator;
+    private final EventLoopLoadTracker loadTracker;
 
     private volatile int ioRatio = 50;
     private int cancelledKeys;
@@ -154,7 +154,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     {
-        this.loadCalculator = new EventLoopLoadTracker(new IntSupplier() {
+        this.loadTracker = new EventLoopLoadTracker(new IntSupplier() {
             @Override
             public int get() throws Exception {
                 long timeoutMillis = deadlineToDelayNanos(nextWakeupNanos.get() + 995000L) / 1000000L;
@@ -163,7 +163,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         });
         if (LOOP_LOAD) {
             final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE
-                    .scheduleAtFixedRate(loadCalculator, 0, 5000, TimeUnit.MILLISECONDS);
+                    .scheduleAtFixedRate(loadTracker, 0, 5000, TimeUnit.MILLISECONDS);
             this.addShutdownHook(new Runnable() {
                 @Override
                 public void run() {
@@ -894,7 +894,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     @Override
     public double loadAvg1() {
         if (LOOP_LOAD) {
-            return loadCalculator.getLoadAvg1();
+            return loadTracker.getLoadAvg1();
         }
         return super.loadAvg1();
     }
@@ -902,7 +902,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     @Override
     public double loadAvg5() {
         if (LOOP_LOAD) {
-            return loadCalculator.getLoadAvg5();
+            return loadTracker.getLoadAvg5();
         }
         return super.loadAvg5();
     }
@@ -910,7 +910,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     @Override
     public double loadAvg15() {
         if (LOOP_LOAD) {
-            return loadCalculator.getLoadAvg15();
+            return loadTracker.getLoadAvg15();
         }
         return super.loadAvg15();
     }
