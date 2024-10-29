@@ -15,6 +15,7 @@
  */
 package io.netty.channel;
 
+import io.netty.util.IntSupplier;
 import io.netty.util.concurrent.RejectedExecutionHandler;
 import io.netty.util.concurrent.RejectedExecutionHandlers;
 import io.netty.util.concurrent.SingleThreadEventExecutor;
@@ -257,7 +258,7 @@ public abstract class SingleThreadEventLoop extends SingleThreadEventExecutor im
          */
         private static final double EXP_15 = Math.exp(-((double) 5) / (15 * 60));
 
-        private final Supplier<Integer> currentTasksFunction;
+        private final IntSupplier currentTasksFunction;
 
         private double loadAvg1;
 
@@ -265,15 +266,19 @@ public abstract class SingleThreadEventLoop extends SingleThreadEventExecutor im
 
         private double loadAvg15;
 
-        public EventLoopLoadTracker(Supplier<Integer> currentTasksFunction) {
+        public EventLoopLoadTracker(IntSupplier currentTasksFunction) {
             this.currentTasksFunction = currentTasksFunction;
         }
 
         private void updateLoad() {
-            int tasks = currentTasksFunction.get();
-            loadAvg1 = loadAvg1 * EXP_1 + (double) tasks * (1 - EXP_1);
-            loadAvg5 = loadAvg5 * EXP_5 + (double) tasks * (1 - EXP_5);
-            loadAvg15 = loadAvg15 * EXP_15 + (double) tasks * (1 - EXP_15);
+            try {
+                int tasks = currentTasksFunction.get();
+                loadAvg1 = loadAvg1 * EXP_1 + (double) tasks * (1 - EXP_1);
+                loadAvg5 = loadAvg5 * EXP_5 + (double) tasks * (1 - EXP_5);
+                loadAvg15 = loadAvg15 * EXP_15 + (double) tasks * (1 - EXP_15);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         }
 
         @Override

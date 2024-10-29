@@ -154,9 +154,12 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     {
-        this.loadCalculator = new EventLoopLoadTracker(() -> {
-            long timeoutMillis = deadlineToDelayNanos(nextWakeupNanos.get() + 995000L) / 1000000L;
-            return pendingTasks() + (timeoutMillis <= 0 ? 1 : 0);
+        this.loadCalculator = new EventLoopLoadTracker(new IntSupplier() {
+            @Override
+            public int get() throws Exception {
+                long timeoutMillis = deadlineToDelayNanos(nextWakeupNanos.get() + 995000L) / 1000000L;
+                return pendingTasks() + (timeoutMillis <= 0 ? 1 : 0);
+            }
         });
         if (LOOP_LOAD) {
             final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE

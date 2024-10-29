@@ -113,9 +113,12 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     }
 
     {
-        this.loadCalculator = new EventLoopLoadTracker(() -> {
-            long timeoutNanos = deadlineToDelayNanos(nextWakeupNanos.get());
-            return pendingTasks() + (timeoutNanos <= 0 ? 1 : 0);
+        this.loadCalculator = new EventLoopLoadTracker(new IntSupplier() {
+            @Override
+            public int get() throws Exception {
+                long timeoutNanos = deadlineToDelayNanos(nextWakeupNanos.get());
+                return pendingTasks() + (timeoutNanos <= 0 ? 1 : 0);
+            }
         });
         if (LOOP_LOAD) {
             final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE
