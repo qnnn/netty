@@ -27,7 +27,9 @@ import io.netty.channel.unix.IovArray;
 import io.netty.util.IntSupplier;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.concurrent.RejectedExecutionHandler;
+import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
@@ -39,6 +41,7 @@ import java.io.IOException;
 import java.util.Iterator;
 import java.util.Queue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static java.lang.Math.min;
@@ -84,6 +87,9 @@ public class EpollEventLoop extends SingleThreadEventLoop {
     //    NONE             when EL is waiting with no wakeup scheduled
     //    other value T    when EL is waiting with wakeup scheduled at time T
     private final AtomicLong nextWakeupNanos = new AtomicLong(AWAKE);
+
+    private final EventLoopLoadTracker loadCalculator;
+
     private boolean pendingWakeup;
     private volatile int ioRatio = 50;
 
@@ -104,6 +110,17 @@ public class EpollEventLoop extends SingleThreadEventLoop {
             events = new EpollEventArray(maxEvents);
         }
         openFileDescriptors();
+    }
+
+    {
+        this.loadCalculator = new EventLoopLoadTracker(() -> {
+            long timeoutNanos = deadlineToDelayNanos(nextWakeupNanos.get());
+            return pendingTasks() + (timeoutNanos <= 0 ? 1 : 0);
+        });
+        if (LOOP_LOAD) {
+            final ScheduledFuture<?> scheduledFuture = GlobalEventExecutor.INSTANCE.scheduleAtFixedRate(loadCalculator, 0, 5000, TimeUnit.MILLISECONDS);
+            this.addShutdownHook(() -> scheduledFuture.cancel(false));
+        }
     }
 
     /**
@@ -583,5 +600,29 @@ public class EpollEventLoop extends SingleThreadEventLoop {
         } catch (IOException e) {
             logger.warn("Failed to close the epoll fd.", e);
         }
+    }
+
+    @Override
+    public double loadAvg1() {
+        if (LOOP_LOAD) {
+            return loadCalculator.getLoadAvg1();
+        }
+        return super.loadAvg1();
+    }
+
+    @Override
+    public double loadAvg5() {
+        if (LOOP_LOAD) {
+            return loadCalculator.getLoadAvg5();
+        }
+        return super.loadAvg5();
+    }
+
+    @Override
+    public double loadAvg15() {
+        if (LOOP_LOAD) {
+            return loadCalculator.getLoadAvg15();
+        }
+        return super.loadAvg15();
     }
 }

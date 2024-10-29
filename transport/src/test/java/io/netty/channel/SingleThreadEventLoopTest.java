@@ -522,6 +522,19 @@ public class SingleThreadEventLoopTest {
                                  onIteration1.getInvocationCount(), is(0));
     }
 
+    @Test
+    public void testEventLoopLoadCalculator() {
+        SingleThreadEventLoop.EventLoopLoadTracker loadCalculator =
+                new SingleThreadEventLoop.EventLoopLoadTracker(() -> 1);
+        for (int i = 0; i < 1000; i++) {
+            loadCalculator.run();
+        }
+        // approaches a load of 1 over time.
+        assertThat(1 - loadCalculator.getLoadAvg1(), lessThan(0.01));
+        assertThat(1 - loadCalculator.getLoadAvg5(), lessThan(0.01));
+        assertThat(1 - loadCalculator.getLoadAvg15(), lessThan(0.01));
+    }
+
     private static final class SingleThreadEventLoopA extends SingleThreadEventLoop {
 
         final AtomicInteger cleanedUp = new AtomicInteger();
