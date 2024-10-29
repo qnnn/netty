@@ -19,6 +19,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.Appender;
 import io.netty.channel.local.LocalChannel;
+import io.netty.util.IntSupplier;
 import io.netty.util.concurrent.EventExecutor;
 import org.hamcrest.MatcherAssert;
 import org.junit.jupiter.api.AfterEach;
@@ -525,7 +526,12 @@ public class SingleThreadEventLoopTest {
     @Test
     public void testEventLoopLoadCalculator() {
         SingleThreadEventLoop.EventLoopLoadTracker loadCalculator =
-                new SingleThreadEventLoop.EventLoopLoadTracker(() -> 1);
+                new SingleThreadEventLoop.EventLoopLoadTracker(new IntSupplier() {
+                    @Override
+                    public int get() throws Exception {
+                        return 1;
+                    }
+                });
         for (int i = 0; i < 1000; i++) {
             loadCalculator.run();
         }
